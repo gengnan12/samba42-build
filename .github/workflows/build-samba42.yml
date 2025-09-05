@@ -1,0 +1,85 @@
+name: Build Samba 4.2 for ARMv5
+on:
+  push:
+    branches: [ main ]  # 推送代码时触发
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04  # 编译环境
+    steps:
+      # 步骤 1：拉取仓库代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 步骤 2：安装依赖工具
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential flex bison python2 python3 \
+                              libssl-dev libacl1-dev libattr1-dev wget tar gzip
+
+      # 步骤 3：下载 ARMv5 交叉编译工具链（以 OpenWrt 工具链为例）
+      - name: Download ARMv5 toolchain
+        run: |
+          # 下载 OpenWrt 适配 ARMv5 的 uClibc 工具链
+          wget https://archive.openwrt.org/chaos_calmer/15.05.1/ar71xx/generic/OpenWrt-Toolchain-ar71xx-for-mips_24kec+dsp-gcc-4.8-linaro_uClibc-0.9.33.2.tar.bz2
+          # 解压到 /opt 目录
+          sudo tar -xjf OpenWrt-Toolchain-ar71xx-for-mips_24kec+dsp-gcc-4.8-linaro_uClibc-0.9.33.2.tar.bz2 -C /opt/
+          # 添加工具链路径到环境变量
+          echo "/opt/OpenWrt-Toolchain-ar71xx-for-mips_24kec+dsp-gcc-4.8-linaro_uClibc-0.9.33.2/bin" >> $GITHUB_PATH
+
+      # 步骤 4：验证工具链
+      - name: Verify toolchain
+        run: |
+          # 工具链前缀（根据实际解压后的编译器名称修改）
+          mipsel-openwrt-linux-uclibc-gcc -v
+
+      # 步骤 5：下载 Samba 4.2 源码（4.2.14 为最后一个稳定版）
+      - name: Download Samba 4.2 source
+        run: |
+          wget https://download.samba.org/pub/samba/stable/samba-4.2.14.tar.gz
+          tar -xzf samba-4.2.14.tar.gz
+          cd samba-4.2.14
+
+      # 步骤 6：配置编译参数（关键：适配 ARMv5 和嵌入式环境）
+      - name: Configure Samba 4.2
+        run: |
+          cd samba-4.2.14
+          ./configure \
+            --host=mipsel-openwrt-linux-uclibc \  # 工具链前缀
+            --prefix=/tmp/samba42-output \        # 输出目录
+            --enable-static \                     # 静态编译（减少依赖）
+            --disable-shared \
+            --with-uclibc \                       # 适配 uClibc 系统
+            --without-ldap \                      # 禁用 LDAP（非必需）
+            --without-ad-dc \                     # 禁用 AD 域控制器功能
+            --without-pam \                       # 禁用 PAM 认证
+            --disable-cups \                      # 禁用打印机支持
+            --disable-iprint \
+            CFLAGS="-march=armv5te -Os" \         # ARMv5 架构优化
+            LDFLAGS="-static"                     # 静态链接
+
+      # 步骤 7：编译 Samba 4.2（核心组件：smbd、nmbd）
+      - name: Compile Samba 4.2
+        run: |
+          cd samba-4.2.14
+          make -j4  # 多线程编译（约 15-30 分钟）
+
+      # 步骤 8：验证编译产物
+      - name: Check compiled binaries
+        run: |
+          cd samba-4.2.14/bin
+          file smbd  # 应显示 ARMv5 架构信息
+          file nmbd
+
+      # 步骤 9：上传产物（可下载到本地）
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: samba42-armv5-binaries
+          path: |
+            samba-4.2.14/bin/smbd
+            samba-4.2.14/bin/nmbd
+            samba-4.2.14/bin/samba-tool  # 可选工具
+          retention-days: 30  # 保留 30 天
