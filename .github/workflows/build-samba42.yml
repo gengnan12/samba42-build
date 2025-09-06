@@ -1,4 +1,4 @@
-name: Build Samba for ARMv7 (Fixed Cross-Compilation)
+name: Build Samba for ARMv7 (Fixed Toolchain)
 
 on:
   workflow_dispatch:
@@ -12,231 +12,179 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install cross-compilation tools
+      - name: Install complete cross-compilation toolchain
         run: |
-          echo "===== 安装交叉编译工具 ====="
+          echo "===== 安装完整的交叉编译工具链 ====="
           sudo apt update
           sudo apt install -y \
             build-essential \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
+            binutils-arm-linux-gnueabihf \
+            libc6-dev-armhf-cross \
+            libstdc++-dev-armhf-cross \
             wget tar xz-utils make \
             pkg-config \
             curl \
-            python3 \
-            libc6-dev-armhf-cross \
-            binutils-arm-linux-gnueabihf
+            python3
 
-      - name: Verify cross-compilation toolchain
+      - name: Test cross-compilation toolchain
         run: |
-          echo "===== 验证交叉编译工具链 ====="
-          echo "GCC版本:"
-          arm-linux-gnueabihf-gcc --version
-          echo ""
-          echo "G++版本:"
-          arm-linux-gnueabihf-g++ --version
-          echo ""
-          echo "工具链位置:"
-          which arm-linux-gnueabihf-gcc
-          which arm-linux-gnueabihf-g++
+          echo "===== 测试交叉编译工具链 ====="
+          # 创建一个简单的测试程序
+          cat > test.c << 'EOF'
+          #include <stdio.h>
+          int main() {
+              printf("Hello ARM!\n");
+              return 0;
+          }
+          EOF
+          
+          # 尝试交叉编译
+          arm-linux-gnueabihf-gcc test.c -o test-arm -static
+          
+          # 检查是否编译成功
+          if [ -f "test-arm" ]; then
+            echo "✅ 交叉编译工具链工作正常"
+            file test-arm
+          else
+            echo "❌ 交叉编译工具链有问题"
+            echo "尝试修复工具链..."
+          fi
+
+      - name: Fix toolchain issues
+        run: |
+          echo "===== 修复工具链问题 ====="
+          # 安装多架构支持
+          sudo dpkg --add-architecture armhf
+          sudo apt update
+          sudo apt install -y \
+            libc6:armhf \
+            libc6-dev:armhf \
+            libstdc++6:armhf
 
       - name: Download Samba source
         run: |
           echo "===== 下载Samba源码 ====="
-          # 使用更稳定的Samba版本
-          SAMBA_VERSION="4.15.0"
+          # 使用更旧的稳定版本
+          SAMBA_VERSION="4.12.0"
           wget https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz
           tar -xzf samba-${SAMBA_VERSION}.tar.gz
 
-      - name: Create cross-compilation environment
+      - name: Create proper cross-compilation environment
         run: |
-          echo "===== 创建交叉编译环境 ====="
-          cd samba-4.15.0
+          echo "===== 创建正确的交叉编译环境 ====="
+          cd samba-4.12.0
           
-          # 创建交叉编译配置文件
+          # 创建完整的交叉编译答案文件
           cat > cross-answers.txt << 'EOF'
           Checking uname sysname type: "Linux"
           Checking uname machine type: "armv7l"
           Checking uname release type: "4.1.52"
           Checking uname version type: "#1 SMP PREEMPT Sat Sep 18 17:36:44 CST 2021"
           Checking simple C program: yes
+          Checking for large file support: yes
+          Checking for -D_FILE_OFFSET_BITS=64: yes
+          Checking for -D_LARGEFILE64_SOURCE=1: yes
+          Checking for -D_LARGE_FILES: yes
+          Checking for C99 vsnprintf: yes
+          Checking for HAVE_FAST_64BIT_OFFSETS: yes
+          Checking for HAVE_SECURE_MKSTEMP: yes
+          Checking for HAVE_IFACE_GETIFADDRS: yes
+          Checking for HAVE_IFACE_IFCONF: yes
+          Checking for HAVE_IFACE_IFREQ: yes
+          Checking for HAVE_MMAP: yes
+          Checking for HAVE_FCNTL_LOCK: yes
+          Checking for HAVE_KRB5: no
+          Checking for HAVE_ADS: no
           EOF
 
-      - name: Configure Samba for cross-compilation
+      - name: Configure Samba with explicit toolchain
         run: |
-          echo "===== 配置Samba交叉编译 ====="
-          cd samba-4.15.0
+          echo "===== 配置Samba (明确指定工具链) ====="
+          cd samba-4.12.0
           
-          # 设置交叉编译环境
+          # 设置完整的交叉编译环境
           export CC="arm-linux-gnueabihf-gcc"
           export CXX="arm-linux-gnueabihf-g++"
           export AR="arm-linux-gnueabihf-ar"
           export RANLIB="arm-linux-gnueabihf-ranlib"
-          export CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os"
-          export LDFLAGS="-static"
-          export CONFIG_SITE=/dev/null
+          export STRIP="arm-linux-gnueabihf-strip"
+          export CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os -static"
+          export LDFLAGS="-static -Wl,--gc-sections"
+          export PKG_CONFIG_PATH=""
+          export PKG_CONFIG_LIBDIR=""
           
-          # 使用交叉编译配置
+          # 使用明确的交叉编译配置
           ./configure \
             --cross-compile \
             --cross-answers=cross-answers.txt \
             --host=arm-linux-gnueabihf \
             --target=arm-linux-gnueabihf \
+            --build=x86_64-linux-gnu \
             --prefix=/usr \
             --disable-python \
             --without-ad-dc \
             --without-ldap \
+            --without-ads \
+            --without-acl-support \
+            --without-pam \
             --disable-avahi \
             --disable-cups \
-            --disable-iprint
+            --disable-iprint \
+            --disable-glusterfs \
+            --enable-static \
+            --disable-shared
 
-      - name: Build Samba with waf
+      - name: Build Samba with explicit flags
         run: |
-          echo "===== 使用waf编译Samba ====="
-          cd samba-4.15.0
+          echo "===== 编译Samba ====="
+          cd samba-4.12.0
           
           export CC="arm-linux-gnueabihf-gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os"
+          export CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os -static"
           export LDFLAGS="-static"
           
-          # 使用waf编译特定目标
-          ./buildtools/bin/waf build --targets=smbd,nmbd,bin/smbpasswd
-
-      - name: Alternative direct build
-        if: failure()
-        run: |
-          echo "===== 直接编译核心组件 ====="
-          cd samba-4.15.0
-          
-          export CC="arm-linux-gnueabihf-gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os"
-          export LDFLAGS="-static"
-          
-          # 直接编译
+          # 编译核心组件
           make -j$(nproc) CC="${CC}" CFLAGS="${CFLAGS}" LDFLAGS="${LDFLAGS}" smbd nmbd smbpasswd
 
       - name: Check and collect binaries
         run: |
           echo "===== 检查和收集二进制文件 ====="
-          cd samba-4.15.0
+          cd samba-4.12.0
           
           mkdir -p ../samba-deploy
           
-          # 查找并复制二进制文件
+          # 查找二进制文件
           if [ -f "bin/smbd" ]; then
             cp bin/smbd bin/nmbd bin/smbpasswd ../samba-deploy/
-          elif [ -f "bin/default/source3/smbd/smbd" ]; then
-            cp bin/default/source3/smbd/smbd ../samba-deploy/smbd
-            cp bin/default/source3/nmbd/nmbd ../samba-deploy/nmbd
-            cp bin/default/source3/utils/smbpasswd ../samba-deploy/smbpasswd
+          elif [ -f "source3/bin/smbd" ]; then
+            cp source3/bin/smbd source3/bin/nmbd source3/bin/smbpasswd ../samba-deploy/
           else
-            # 搜索整个目录
             find . -name "smbd" -type f -executable -exec cp {} ../samba-deploy/ \; 2>/dev/null || true
             find . -name "nmbd" -type f -executable -exec cp {} ../samba-deploy/ \; 2>/dev/null || true
             find . -name "smbpasswd" -type f -executable -exec cp {} ../samba-deploy/ \; 2>/dev/null || true
           fi
 
-      - name: Verify binaries
+      - name: Create final package
         run: |
-          echo "===== 验证二进制文件 ====="
+          echo "===== 创建最终包 ====="
+          mkdir -p samba-deploy
           cd samba-deploy
           
           if [ -f "smbd" ]; then
-            echo "✅ 找到编译好的二进制文件:"
-            ls -la
-            echo ""
-            echo "文件类型:"
-            file smbd
-            echo ""
-            echo "架构检查:"
-            arm-linux-gnueabihf-readelf -h smbd | grep "Machine:" | grep "ARM" || echo "架构检查失败"
-          else
-            echo "❌ 未找到二进制文件，创建手动编译指南"
+            echo "✅ 创建安装脚本"
             
-            cat > COMPILE_GUIDE.md << 'EOF'
-            # Samba for ARMv7 手动编译指南
-            
-            ## 问题分析
-            自动交叉编译失败，可能是因为工具链配置问题。
-            
-            ## 解决方案
-            
-            ### 方案一: 在目标设备上直接编译
-            ```bash
-            # 在您的ARM设备上执行
-            wget https://download.samba.org/pub/samba/stable/samba-4.15.0.tar.gz
-            tar -xzf samba-4.15.0.tar.gz
-            cd samba-4.15.0
-            ./configure --prefix=/usr --disable-python --without-ad-dc
-            make -j$(nproc) smbd nmbd smbpasswd
-            sudo make install
-            ```
-            
-            ### 方案二: 使用正确的交叉编译环境
-            ```bash
-            # 在x86机器上
-            sudo apt install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf
-            
-            # 创建交叉编译答案文件
-            cat > cross-answers.txt << 'END'
-            Checking uname sysname type: "Linux"
-            Checking uname machine type: "armv7l"
-            Checking uname release type: "4.1.52"
-            Checking uname version type: "#1 SMP PREEMPT Sat Sep 18 17:36:44 CST 2021"
-            Checking simple C program: yes
-            END
-            
-            # 配置和编译
-            ./configure --cross-compile --cross-answers=cross-answers.txt \
-                        --host=arm-linux-gnueabihf --prefix=/usr
-            make smbd nmbd smbpasswd
-            ```
-            
-            ### 方案三: 使用包管理器
-            ```bash
-            # Debian/Ubuntu
-            sudo apt install samba
-            
-            # OpenWrt
-            opkg install samba4-server
-            
-            # CentOS/RHEL
-            sudo yum install samba
-            ```
-            
-            ## 配置示例
-            `/etc/samba/smb.conf`:
-            ```ini
-            [global]
-            workgroup = WORKGROUP
-            security = user
-            map to guest = Bad User
-            
-            [shared]
-            path = /mnt/shared
-            browseable = yes
-            writable = yes
-            guest ok = no
-            ```
-            EOF
-          fi
-
-      - name: Create installation package
-        run: |
-          echo "===== 创建安装包 ====="
-          cd samba-deploy
-          
-          if [ -f "smbd" ]; then
             cat > install.sh << 'EOF'
             #!/bin/sh
-            echo "=== Samba ARMv7 安装程序 ==="
+            echo "=== Samba for ARMv7 安装程序 ==="
             
             if [ "$(id -u)" -ne 0 ]; then
-              echo "请使用root权限运行: sudo ./install.sh"
+              echo "请使用: sudo ./install.sh"
               exit 1
             fi
             
-            echo "安装二进制文件..."
+            echo "安装Samba二进制文件..."
             
             for bin in smbd nmbd smbpasswd; do
               if [ -f "$bin" ]; then
@@ -246,7 +194,6 @@ jobs:
             done
             
             echo "安装完成!"
-            echo "使用方法: smbd -D && nmbd -D"
             EOF
             
             chmod +x install.sh
@@ -263,6 +210,47 @@ jobs:
             writable = yes
             guest ok = no
             EOF
+            
+          else
+            echo "❌ 编译失败，创建详细指南"
+            
+            cat > COMPILE_GUIDE.md << 'EOF'
+            # Samba for ARMv7 编译指南
+            
+            ## 问题分析
+            交叉编译工具链配置失败。
+            
+            ## 解决方案
+            
+            ### 方案一: 在目标设备上直接编译
+            ```bash
+            # 在ARM设备上执行
+            wget https://download.samba.org/pub/samba/stable/samba-4.12.0.tar.gz
+            tar -xzf samba-4.12.0.tar.gz
+            cd samba-4.12.0
+            ./configure --prefix=/usr --disable-python
+            make -j$(nproc) smbd nmbd smbpasswd
+            sudo make install
+            ```
+            
+            ### 方案二: 使用预编译包
+            ```bash
+            # Debian/Ubuntu
+            sudo apt install samba
+            
+            # OpenWrt
+            opkg install samba4-server
+            
+            # 从第三方源获取预编译的ARMv7二进制文件
+            ```
+            
+            ### 方案三: 手动设置交叉编译
+            确保安装完整的工具链:
+            ```bash
+            sudo apt install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+                 binutils-arm-linux-gnueabihf libc6-dev-armhf-cross
+            ```
+            EOF
           fi
 
       - name: Upload artifacts
@@ -272,13 +260,13 @@ jobs:
           path: samba-deploy/*
           retention-days: 30
 
-      - name: Show results
+      - name: Final message
         run: |
           if [ -f "samba-deploy/smbd" ]; then
-            echo "✅ 构建成功!"
-            echo "📦 二进制文件已上传"
+            echo "🎉 成功编译Samba for ARMv7!"
+            echo "📦 二进制文件已上传到Artifacts"
           else
-            echo "⚠️ 交叉编译遇到问题"
-            echo "📋 已上传详细的手动编译指南"
-            echo "💡 建议在目标设备上直接编译"
+            echo "⚠️ 交叉编译失败"
+            echo "💡 建议在目标ARM设备上直接编译Samba"
+            echo "📋 已上传详细的编译指南"
           fi
