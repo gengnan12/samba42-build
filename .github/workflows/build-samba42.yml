@@ -1,4 +1,4 @@
-name: Build Samba 4 for ARMv7 (With Nettle)
+name: Build Samba 4 for ARMv7 (With Nettle and GMP)
 
 on:
   workflow_dispatch:
@@ -42,6 +42,32 @@ jobs:
           sudo make install
           cd ..
 
+      - name: Build GMP from source
+        run: |
+          echo "===== 编译GMP ====="
+          wget https://gmplib.org/download/gmp/gmp-6.2.1.tar.xz || \
+          wget https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz
+          
+          tar -xJf gmp-6.2.1.tar.xz
+          cd gmp-6.2.1
+          
+          export CC="arm-linux-gnueabihf-gcc"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS"
+          export LDFLAGS="-static"
+          
+          ./configure \
+            --host=arm-linux-gnueabihf \
+            --prefix=/opt/arm-deps \
+            --enable-static \
+            --disable-shared \
+            --disable-cxx \
+            CFLAGS="${CFLAGS}" \
+            LDFLAGS="${LDFLAGS}"
+          
+          make -j$(nproc)
+          sudo make install
+          cd ..
+
       - name: Build OpenSSL from source
         run: |
           echo "===== 编译OpenSSL ====="
@@ -70,10 +96,9 @@ jobs:
           sudo make install
           cd ..
 
-      - name: Build Nettle from source
+      - name: Build Nettle with GMP support
         run: |
-          echo "===== 编译Nettle ====="
-          # 下载nettle
+          echo "===== 编译Nettle (带GMP支持) ====="
           wget https://ftp.gnu.org/gnu/nettle/nettle-3.4.1.tar.gz || \
           wget https://mirrors.kernel.org/gnu/nettle/nettle-3.4.1.tar.gz
           
@@ -83,15 +108,20 @@ jobs:
           export CC="arm-linux-gnueabihf-gcc"
           export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS -I/opt/arm-deps/include"
           export LDFLAGS="-L/opt/arm-deps/lib -static"
+          export PKG_CONFIG_PATH="/opt/arm-deps/lib/pkgconfig"
           
+          # 配置nettle启用GMP支持
           ./configure \
             --host=arm-linux-gnueabihf \
             --prefix=/opt/arm-deps \
             --enable-static \
             --disable-shared \
             --disable-documentation \
+            --enable-mini-gmp \
             CFLAGS="${CFLAGS}" \
-            LDFLAGS="${LDFLAGS}"
+            LDFLAGS="${LDFLAGS}" \
+            --with-include-path=/opt/arm-deps/include \
+            --with-lib-path=/opt/arm-deps/lib
           
           make -j$(nproc)
           sudo make install
@@ -142,9 +172,9 @@ jobs:
           export CC="arm-linux-gnueabihf-gcc"
           export CXX="arm-linux-gnueabihf-g++"
           export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS -I/opt/arm-deps/include"
-          export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz -lnettle"
+          export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz -lnettle -lhogweed -lgmp"
 
-          # 配置Samba，明确指定nettle路径
+          # 配置Samba，确保找到所有依赖
           ./configure \
             --host=arm-linux-gnueabihf \
             --prefix=/usr \
@@ -163,7 +193,9 @@ jobs:
             --without-ads \
             --without-pam \
             nettle_CFLAGS="-I/opt/arm-deps/include" \
-            nettle_LIBS="-L/opt/arm-deps/lib -lnettle" \
+            nettle_LIBS="-L/opt/arm-deps/lib -lnettle -lhogweed" \
+            hogweed_CFLAGS="-I/opt/arm-deps/include" \
+            hogweed_LIBS="-L/opt/arm-deps/lib -lhogweed" \
             ac_cv_func_fstatfs=yes
 
           make -j$(nproc) all
@@ -192,32 +224,6 @@ jobs:
           
           cp smbd nmbd smbpasswd ../../samba-deploy/
           
-          # 创建详细的安装说明
-          cat > ../../samba-deploy/README.md << 'EOF'
-          # Samba 4.8.12 for ARMv7
-          
-          适用于: ARMv7架构，Linux 4.1.x内核 (Buildroot 2017)
-          特性: 静态链接，包含所有依赖
-          
-          包含组件:
-          - smbd: Samba文件共享服务
-          - nmbd: NetBIOS名称服务  
-          - smbpasswd: 用户管理工具
-          
-          依赖库:
-          - OpenSSL 1.1.1w
-          - GnuTLS 3.6.16
-          - Nettle 3.4.1
-          - zlib 1.2.13
-          
-          安装方法:
-          1. 将二进制文件复制到设备
-          2. 运行: chmod +x install.sh
-          3. 运行: ./install.sh
-          
-          注意: 所有库都已静态链接，无需额外安装依赖
-          EOF
-          
           # 创建安装脚本
           cat > ../../samba-deploy/install.sh << 'EOF'
           #!/bin/sh
@@ -234,8 +240,6 @@ jobs:
           echo "使用方法:"
           echo "启动服务: smbd -D && nmbd -D"
           echo "添加用户: smbpasswd -a username"
-          echo ""
-          echo "配置示例: /etc/samba/smb.conf"
           EOF
           
           chmod +x ../../samba-deploy/install.sh
@@ -243,14 +247,14 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: samba4.8-armv7-with-nettle
+          name: samba4.8-armv7-complete
           path: samba-deploy/*
           retention-days: 30
 
       - name: Show build success
         run: |
           echo "✅ 构建成功!"
-          echo "📦 包含: Samba 4.8.12 + Nettle 3.4.1"
+          echo "📦 包含: Samba 4.8.12 + Nettle + GMP + Hogweed"
           echo "🖥️  架构: ARMv7"
           echo "🔗 链接: 完全静态"
           echo "⏰ 时间: $(date)"
