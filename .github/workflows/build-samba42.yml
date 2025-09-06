@@ -1,4 +1,4 @@
-name: Build Samba 4 for ARMv7 (Fixed Build System)
+name: Build Samba 4 for ARMv7 (Waf Build System)
 
 on:
   workflow_dispatch:
@@ -24,17 +24,14 @@ jobs:
             pkg-config \
             curl \
             python3 \
-            python3-pip
+            python3-pip \
+            xsltproc \
+            docbook-xsl
 
-      - name: Install Python dependencies for newer Samba
+      - name: Download and build Samba with Waf
         run: |
-          echo "===== 安装Python依赖 ====="
-          pip3 install --user setuptools
-
-      - name: Build Samba 4.18+ (modern build system)
-        run: |
-          echo "===== 编译现代版Samba (4.18+) ====="
-          # 下载较新的Samba版本，支持现代构建系统
+          echo "===== 使用Waf构建系统编译Samba ====="
+          # 下载Samba版本
           SAMBA_VERSION="4.18.0"
           wget https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz
           tar -xzf samba-${SAMBA_VERSION}.tar.gz
@@ -44,11 +41,13 @@ jobs:
           export CC="arm-linux-gnueabihf-gcc"
           export CXX="arm-linux-gnueabihf-g++"
           export AR="arm-linux-gnueabihf-ar"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os"
-          export LDFLAGS="-static"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os -ffunction-sections -fdata-sections"
+          export LDFLAGS="-static -Wl,--gc-sections"
 
-          # 使用bootstrap和configure
+          # 使用waf configure（正确的语法）
           ./configure \
+            --cross-compile \
+            --cross-answers=arm.txt \
             --host=arm-linux-gnueabihf \
             --target=arm-linux-gnueabihf \
             --prefix=/usr \
@@ -59,23 +58,25 @@ jobs:
             --without-ad-dc \
             --without-systemd \
             --without-winbind \
-            --enable-static \
-            --disable-shared \
-            --without-gnutls \
-            --with-builtin-libraries=md5,des,sha256,sha512,arc4
+            --disable-avahi \
+            --disable-cups \
+            --disable-iprint \
+            --disable-glusterfs \
+            --disable-rpath \
+            --disable-fault-handling \
+            --nonshared-binary=smbd,nmbd,smbpasswd
 
-          # 只编译核心组件
-          make -j$(nproc) all
+          # 编译特定的二进制文件
+          ./buildtools/bin/waf build --targets=smbd,nmbd,smbpasswd
 
           # 复制二进制文件
           mkdir -p ../samba-deploy
           cp bin/smbd bin/nmbd bin/smbpasswd ../samba-deploy/
 
-      - name: Alternative minimal build
+      - name: Alternative simple build
         if: failure()
         run: |
-          echo "===== 最小化编译方案 ====="
-          # 如果标准构建失败，尝试最小化构建
+          echo "===== 简单编译方案 ====="
           SAMBA_VERSION="4.18.0"
           cd samba-${SAMBA_VERSION}
 
@@ -83,45 +84,50 @@ jobs:
           export CFLAGS="-march=armv7-a -mfpu=neon -Os"
           export LDFLAGS="-static"
 
-          # 直接使用make编译特定目标
-          make -j$(nproc) \
-            CC="${CC}" \
-            CFLAGS="${CFLAGS}" \
-            LDFLAGS="${LDFLAGS}" \
-            smbd nmbd smbpasswd
+          # 直接使用make（如果可用）
+          if [ -f "Makefile" ]; then
+            make -j$(nproc) \
+              CC="${CC}" \
+              CFLAGS="${CFLAGS}" \
+              LDFLAGS="${LDFLAGS}" \
+              smbd nmbd smbpasswd
+          else
+            # 使用waf直接构建
+            ./buildtools/bin/waf build --targets=smbd,nmbd,smbpasswd \
+              --cross-compile \
+              --host=arm-linux-gnueabihf \
+              --cflags="${CFLAGS}" \
+              --ldflags="${LDFLAGS}"
+          fi
 
           mkdir -p ../samba-deploy
           cp bin/smbd bin/nmbd bin/smbpasswd ../samba-deploy/
 
-      - name: Build from source3 directory (old style)
+      - name: Build minimal from source3
         if: failure()
         run: |
-          echo "===== 传统方式编译 ====="
-          # 尝试使用source3目录的传统构建方式
+          echo "===== 从source3最小化编译 ====="
+          # 尝试旧版本
           SAMBA_VERSION="4.8.12"
           wget https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz
           tar -xzf samba-${SAMBA_VERSION}.tar.gz
-          cd samba-${SAMBA_VERSION}
-
-          # 进入source3目录
-          cd source3
+          cd samba-${SAMBA_VERSION}/source3
 
           export CC="arm-linux-gnueabihf-gcc"
           export CFLAGS="-march=armv7-a -mfpu=neon -Os"
           export LDFLAGS="-static"
 
-          # 如果存在autogen.sh，先运行它
-          if [ -f "autogen.sh" ]; then
-            ./autogen.sh
-          fi
-
-          # 如果存在configure脚本，使用它
+          # 尝试autoconf方式
           if [ -f "configure" ]; then
             ./configure \
               --host=arm-linux-gnueabihf \
               --prefix=/usr \
-              --enable-static \
-              --disable-shared
+              --enable-static-binaries
+          elif [ -f "autogen.sh" ]; then
+            ./autogen.sh
+            ./configure \
+              --host=arm-linux-gnueabihf \
+              --prefix=/usr
           fi
 
           # 编译核心组件
@@ -134,12 +140,12 @@ jobs:
           mkdir -p ../../samba-deploy
           cp bin/smbd bin/nmbd bin/smbpasswd ../../samba-deploy/
 
-      - name: Verify binaries
+      - name: Verify and package binaries
         run: |
-          echo "===== 验证二进制文件 ====="
+          echo "===== 验证和打包二进制文件 ====="
           mkdir -p samba-deploy
           
-          # 检查并复制二进制文件
+          # 复制二进制文件
           if [ -f "samba-4.18.0/bin/smbd" ]; then
             cp samba-4.18.0/bin/smbd samba-4.18.0/bin/nmbd samba-4.18.0/bin/smbpasswd samba-deploy/
           elif [ -f "samba-4.8.12/source3/bin/smbd" ]; then
@@ -149,11 +155,14 @@ jobs:
             exit 1
           fi
 
+          # 验证二进制文件
           cd samba-deploy
           echo "文件信息:"
           file smbd
           echo "架构检查:"
           arm-linux-gnueabihf-readelf -h smbd | grep "Machine:" | grep "ARM" || exit 1
+          echo "链接类型:"
+          arm-linux-gnueabihf-readelf -d smbd | grep "Shared library" || echo "静态链接"
 
       - name: Create installation package
         run: |
@@ -162,64 +171,77 @@ jobs:
           
           cat > install.sh << 'EOF'
           #!/bin/sh
-          echo "=== Samba for ARMv7 安装程序 ==="
-          echo "系统信息: $(uname -a)"
+          echo "=== Samba ARMv7 安装程序 ==="
+          echo ""
           
-          # 检查架构
-          if [ "$(uname -m)" != "armv7l" ]; then
-            echo "警告: 当前架构是 $(uname -m)，但二进制文件是为ARMv7编译的"
-            read -p "是否继续安装? (y/N) " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-              exit 1
-            fi
+          # 检查root权限
+          if [ "$(id -u)" -ne 0 ]; then
+            echo "请使用root权限运行此脚本"
+            echo "sudo ./install.sh"
+            exit 1
           fi
           
-          # 安装二进制文件
-          for bin in smbd nmbd smbpasswd; do
-            if [ -f "$bin" ]; then
-              if [ -f "/usr/sbin/$bin" ]; then
-                mv "/usr/sbin/$bin" "/usr/sbin/${bin}.backup"
-                echo "已备份原文件: /usr/sbin/${bin}.backup"
-              fi
-              install -m 755 "$bin" "/usr/sbin/"
-              echo "已安装: /usr/sbin/$bin"
-            else
-              echo "错误: 找不到文件 $bin"
+          echo "安装Samba二进制文件..."
+          echo ""
+          
+          # 安装每个二进制文件
+          for binfile in smbd nmbd smbpasswd; do
+            if [ ! -f "$binfile" ]; then
+              echo "错误: 找不到文件 $binfile"
+              continue
             fi
+            
+            # 备份原有文件
+            if [ -f "/usr/sbin/$binfile" ]; then
+              backup_file="/usr/sbin/${binfile}.backup.$(date +%Y%m%d_%H%M%S)"
+              mv "/usr/sbin/$binfile" "$backup_file"
+              echo "已备份: $backup_file"
+            fi
+            
+            # 安装新文件
+            install -m 755 "$binfile" "/usr/sbin/"
+            echo "已安装: /usr/sbin/$binfile"
           done
           
           echo ""
           echo "=== 安装完成 ==="
           echo ""
-          echo "使用方法:"
-          echo "1. 启动文件共享服务: smbd -D"
-          echo "2. 启动名称解析服务: nmbd -D"
+          echo "下一步:"
+          echo "1. 创建配置文件: /etc/samba/smb.conf"
+          echo "2. 启动服务: smbd -D && nmbd -D"
           echo "3. 添加用户: smbpasswd -a 用户名"
           echo ""
-          echo "需要先创建配置文件 /etc/samba/smb.conf"
+          echo "查看示例配置: cat smb.conf.example"
           EOF
           
           chmod +x install.sh
           
-          # 创建简单的配置文件示例
+          # 创建配置文件示例
           cat > smb.conf.example << 'EOF'
           [global]
           workgroup = WORKGROUP
+          netbios name = SAMBA_SERVER
           server string = Samba Server
           security = user
           map to guest = Bad User
           log file = /var/log/samba/log.%m
           max log size = 50
+          socket options = TCP_NODELAY SO_RCVBUF=8192 SO_SNDBUF=8192
+
+          [homes]
+          comment = Home Directories
+          browseable = no
+          writable = yes
+          valid users = %S
 
           [shared]
           comment = Shared Folder
           path = /mnt/shared
           browseable = yes
           writable = yes
-          valid users = @smbusers
-          create mask = 0664
-          directory mask = 0775
+          guest ok = no
+          create mask = 0644
+          directory mask = 0755
           EOF
 
       - name: Upload artifacts
@@ -234,5 +256,5 @@ jobs:
           echo "✅ 构建成功!"
           echo "📦 二进制文件已上传到Artifacts"
           echo "🖥️  架构: ARMv7"
-          echo "🔧 使用现代构建系统"
+          echo "🔧 使用Waf构建系统"
           echo "⏰ 时间: $(date)"
