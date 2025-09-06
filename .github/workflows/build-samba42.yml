@@ -1,4 +1,4 @@
-name: Build Samba 4 for ARMv7 (Docker Approach)
+name: Build Samba 4 for ARMv7 (Fixed Build System)
 
 on:
   workflow_dispatch:
@@ -12,105 +12,45 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Docker build environment
+      - name: Install basic tools
         run: |
-          echo "===== 设置Docker编译环境 ====="
+          echo "===== 安装基础工具 ====="
           sudo apt update
-          sudo apt install -y docker.io
+          sudo apt install -y \
+            build-essential \
+            gcc-arm-linux-gnueabihf \
+            g++-arm-linux-gnueabihf \
+            wget tar xz-utils make \
+            pkg-config \
+            curl \
+            python3 \
+            python3-pip
 
-      - name: Create Dockerfile for cross compilation
+      - name: Install Python dependencies for newer Samba
         run: |
-          echo "===== 创建Dockerfile ====="
-          cat > Dockerfile << 'EOF'
-          FROM ubuntu:20.04
+          echo "===== 安装Python依赖 ====="
+          pip3 install --user setuptools
 
-          # 设置环境变量
-          ENV DEBIAN_FRONTEND=noninteractive
-          ENV TZ=UTC
-
-          # 安装编译工具和依赖
-          RUN apt update && apt install -y \
-              build-essential \
-              gcc-arm-linux-gnueabihf \
-              g++-arm-linux-gnueabihf \
-              wget tar xz-utils make \
-              python2 \
-              python2-dev \
-              pkg-config \
-              curl
-
-          # 设置工作目录
-          WORKDIR /build
-
-          # 复制编译脚本
-          COPY build-samba.sh .
-
-          # 设置执行权限
-          RUN chmod +x build-samba.sh
-
-          # 设置入口点
-          CMD ["./build-samba.sh"]
-          EOF
-
-      - name: Create build script
+      - name: Build Samba 4.18+ (modern build system)
         run: |
-          echo "===== 创建编译脚本 ====="
-          cat > build-samba.sh << 'EOF'
-          #!/bin/bash
+          echo "===== 编译现代版Samba (4.18+) ====="
+          # 下载较新的Samba版本，支持现代构建系统
+          SAMBA_VERSION="4.18.0"
+          wget https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz
+          tar -xzf samba-${SAMBA_VERSION}.tar.gz
+          cd samba-${SAMBA_VERSION}
 
-          set -e
-
-          echo "===== 开始编译Samba for ARMv7 ====="
-
-          # 设置Python 2为默认
-          update-alternatives --install /usr/bin/python python /usr/bin/python2 1
-          update-alternatives --install /usr/bin/python python /usr/bin/python3 2
-          update-alternatives --set python /usr/bin/python2
-          python --version
-
-          # 编译zlib
-          echo "===== 编译zlib ====="
-          wget https://zlib.net/zlib-1.2.13.tar.gz -O zlib-1.2.13.tar.gz
-          tar -xzf zlib-1.2.13.tar.gz
-          cd zlib-1.2.13
-          CC="arm-linux-gnueabihf-gcc" \
-          CFLAGS="-march=armv7-a -mfpu=neon -Os" \
-          ./configure --prefix=/opt/arm-deps --static
-          make -j$(nproc)
-          make install
-          cd ..
-
-          # 编译OpenSSL
-          echo "===== 编译OpenSSL ====="
-          wget https://www.openssl.org/source/openssl-1.1.1w.tar.gz -O openssl-1.1.1w.tar.gz
-          tar -xzf openssl-1.1.1w.tar.gz
-          cd openssl-1.1.1w
-          export CROSS_COMPILE="arm-linux-gnueabihf-"
-          export CC="${CROSS_COMPILE}gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os"
-          ./Configure linux-armv4 \
-            --prefix=/opt/arm-deps \
-            no-shared \
-            no-dso \
-            no-asm \
-            ${CFLAGS}
-          sed -i 's/^CC=.*/CC=$(CROSS_COMPILE)gcc/' Makefile
-          make -j$(nproc)
-          make install
-          cd ..
-
-          # 下载和编译Samba 4.8.12
-          echo "===== 编译Samba 4.8.12 ====="
-          wget https://download.samba.org/pub/samba/stable/samba-4.8.12.tar.gz -O samba-4.8.12.tar.gz
-          tar -xzf samba-4.8.12.tar.gz
-          cd samba-4.8.12
-
+          # 设置交叉编译环境
           export CC="arm-linux-gnueabihf-gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os -I/opt/arm-deps/include"
-          export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz"
+          export CXX="arm-linux-gnueabihf-g++"
+          export AR="arm-linux-gnueabihf-ar"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os"
+          export LDFLAGS="-static"
 
+          # 使用bootstrap和configure
           ./configure \
             --host=arm-linux-gnueabihf \
+            --target=arm-linux-gnueabihf \
             --prefix=/usr \
             --sysconfdir=/etc/samba \
             --localstatedir=/var \
@@ -119,87 +59,96 @@ jobs:
             --without-ad-dc \
             --without-systemd \
             --without-winbind \
-            --with-zlib=/opt/arm-deps \
             --enable-static \
             --disable-shared \
-            --without-gnutls
+            --without-gnutls \
+            --with-builtin-libraries=md5,des,sha256,sha512,arc4
 
+          # 只编译核心组件
           make -j$(nproc) all
 
-          # 复制二进制文件到输出目录
-          mkdir -p /output
-          cp bin/smbd bin/nmbd bin/smbpasswd /output/
+          # 复制二进制文件
+          mkdir -p ../samba-deploy
+          cp bin/smbd bin/nmbd bin/smbpasswd ../samba-deploy/
 
-          echo "===== 编译完成 ====="
-          EOF
-
-          chmod +x build-samba.sh
-
-      - name: Build using Docker
-        run: |
-          echo "===== 使用Docker编译 ====="
-          # 构建Docker镜像
-          sudo docker build -t samba-builder .
-          
-          # 运行Docker容器并编译
-          sudo docker run --rm -v $(pwd)/output:/output samba-builder
-          
-          # 检查输出文件
-          ls -la output/
-
-      - name: Alternative direct compilation
+      - name: Alternative minimal build
         if: failure()
         run: |
-          echo "===== 直接编译方案 ====="
-          # 如果Docker方案失败，尝试直接编译
-          sudo apt update
-          sudo apt install -y \
-            build-essential \
-            gcc-arm-linux-gnueabihf \
-            g++-arm-linux-gnueabihf \
-            wget tar xz-utils make \
-            pkg-config \
-            curl
+          echo "===== 最小化编译方案 ====="
+          # 如果标准构建失败，尝试最小化构建
+          SAMBA_VERSION="4.18.0"
+          cd samba-${SAMBA_VERSION}
 
-          # 下载Samba 4.13+ (支持Python 3)
-          wget https://download.samba.org/pub/samba/stable/samba-4.13.0.tar.gz
-          tar -xzf samba-4.13.0.tar.gz
-          cd samba-4.13.0
-
-          # 直接编译核心组件，跳过复杂的配置
           export CC="arm-linux-gnueabihf-gcc"
           export CFLAGS="-march=armv7-a -mfpu=neon -Os"
           export LDFLAGS="-static"
 
-          cd source3
-          ./configure \
-            --host=arm-linux-gnueabihf \
-            --prefix=/usr \
-            --enable-static \
-            --disable-shared
+          # 直接使用make编译特定目标
+          make -j$(nproc) \
+            CC="${CC}" \
+            CFLAGS="${CFLAGS}" \
+            LDFLAGS="${LDFLAGS}" \
+            smbd nmbd smbpasswd
 
-          make -j$(nproc) smbd nmbd smbpasswd
+          mkdir -p ../samba-deploy
+          cp bin/smbd bin/nmbd bin/smbpasswd ../samba-deploy/
 
-          # 复制二进制文件
-          mkdir -p ../output
-          cp bin/smbd bin/nmbd bin/smbpasswd ../output/
-
-      - name: Collect binaries
+      - name: Build from source3 directory (old style)
+        if: failure()
         run: |
-          echo "===== 收集二进制文件 ====="
+          echo "===== 传统方式编译 ====="
+          # 尝试使用source3目录的传统构建方式
+          SAMBA_VERSION="4.8.12"
+          wget https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz
+          tar -xzf samba-${SAMBA_VERSION}.tar.gz
+          cd samba-${SAMBA_VERSION}
+
+          # 进入source3目录
+          cd source3
+
+          export CC="arm-linux-gnueabihf-gcc"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os"
+          export LDFLAGS="-static"
+
+          # 如果存在autogen.sh，先运行它
+          if [ -f "autogen.sh" ]; then
+            ./autogen.sh
+          fi
+
+          # 如果存在configure脚本，使用它
+          if [ -f "configure" ]; then
+            ./configure \
+              --host=arm-linux-gnueabihf \
+              --prefix=/usr \
+              --enable-static \
+              --disable-shared
+          fi
+
+          # 编译核心组件
+          make -j$(nproc) \
+            CC="${CC}" \
+            CFLAGS="${CFLAGS}" \
+            LDFLAGS="${LDFLAGS}" \
+            smbd nmbd smbpasswd
+
+          mkdir -p ../../samba-deploy
+          cp bin/smbd bin/nmbd bin/smbpasswd ../../samba-deploy/
+
+      - name: Verify binaries
+        run: |
+          echo "===== 验证二进制文件 ====="
           mkdir -p samba-deploy
           
-          # 从Docker输出或直接编译输出复制文件
-          if [ -d "output" ] && [ "$(ls -A output)" ]; then
-            cp output/* samba-deploy/
-          elif [ -f "samba-4.13.0/source3/bin/smbd" ]; then
-            cp samba-4.13.0/source3/bin/smbd samba-4.13.0/source3/bin/nmbd samba-4.13.0/source3/bin/smbpasswd samba-deploy/
+          # 检查并复制二进制文件
+          if [ -f "samba-4.18.0/bin/smbd" ]; then
+            cp samba-4.18.0/bin/smbd samba-4.18.0/bin/nmbd samba-4.18.0/bin/smbpasswd samba-deploy/
+          elif [ -f "samba-4.8.12/source3/bin/smbd" ]; then
+            cp samba-4.8.12/source3/bin/smbd samba-4.8.12/source3/bin/nmbd samba-4.8.12/source3/bin/smbpasswd samba-deploy/
           else
             echo "错误: 找不到编译好的二进制文件"
             exit 1
           fi
 
-          # 验证二进制文件
           cd samba-deploy
           echo "文件信息:"
           file smbd
@@ -213,28 +162,65 @@ jobs:
           
           cat > install.sh << 'EOF'
           #!/bin/sh
-          echo "安装Samba for ARMv7..."
-          echo "系统架构: $(uname -m)"
+          echo "=== Samba for ARMv7 安装程序 ==="
+          echo "系统信息: $(uname -a)"
+          
+          # 检查架构
+          if [ "$(uname -m)" != "armv7l" ]; then
+            echo "警告: 当前架构是 $(uname -m)，但二进制文件是为ARMv7编译的"
+            read -p "是否继续安装? (y/N) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+              exit 1
+            fi
+          fi
           
           # 安装二进制文件
           for bin in smbd nmbd smbpasswd; do
-            if [ -f "/usr/sbin/$bin" ]; then
-              mv "/usr/sbin/$bin" "/usr/sbin/${bin}.backup"
-              echo "已备份: /usr/sbin/${bin}.backup"
+            if [ -f "$bin" ]; then
+              if [ -f "/usr/sbin/$bin" ]; then
+                mv "/usr/sbin/$bin" "/usr/sbin/${bin}.backup"
+                echo "已备份原文件: /usr/sbin/${bin}.backup"
+              fi
+              install -m 755 "$bin" "/usr/sbin/"
+              echo "已安装: /usr/sbin/$bin"
+            else
+              echo "错误: 找不到文件 $bin"
             fi
-            install -m 755 "$bin" "/usr/sbin/"
-            echo "已安装: /usr/sbin/$bin"
           done
           
-          echo "安装完成!"
+          echo ""
+          echo "=== 安装完成 ==="
           echo ""
           echo "使用方法:"
-          echo "启动文件共享: smbd -D"
-          echo "启动名称服务: nmbd -D"
-          echo "添加用户: smbpasswd -a username"
+          echo "1. 启动文件共享服务: smbd -D"
+          echo "2. 启动名称解析服务: nmbd -D"
+          echo "3. 添加用户: smbpasswd -a 用户名"
+          echo ""
+          echo "需要先创建配置文件 /etc/samba/smb.conf"
           EOF
           
           chmod +x install.sh
+          
+          # 创建简单的配置文件示例
+          cat > smb.conf.example << 'EOF'
+          [global]
+          workgroup = WORKGROUP
+          server string = Samba Server
+          security = user
+          map to guest = Bad User
+          log file = /var/log/samba/log.%m
+          max log size = 50
+
+          [shared]
+          comment = Shared Folder
+          path = /mnt/shared
+          browseable = yes
+          writable = yes
+          valid users = @smbusers
+          create mask = 0664
+          directory mask = 0775
+          EOF
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -247,6 +233,6 @@ jobs:
         run: |
           echo "✅ 构建成功!"
           echo "📦 二进制文件已上传到Artifacts"
-          echo "🐳 使用Docker容器编译"
           echo "🖥️  架构: ARMv7"
+          echo "🔧 使用现代构建系统"
           echo "⏰ 时间: $(date)"
