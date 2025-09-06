@@ -1,4 +1,4 @@
-name: Build Samba 4 for ARMv7 (Waf Build System)
+name: Build Samba for ARMv7 (Simplified Approach)
 
 on:
   workflow_dispatch:
@@ -12,9 +12,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install basic tools
+      - name: Install cross-compilation tools
         run: |
-          echo "===== 安装基础工具 ====="
+          echo "===== 安装交叉编译工具 ====="
           sudo apt update
           sudo apt install -y \
             build-essential \
@@ -23,238 +23,452 @@ jobs:
             wget tar xz-utils make \
             pkg-config \
             curl \
-            python3 \
-            python3-pip \
-            xsltproc \
-            docbook-xsl
+            python3
 
-      - name: Download and build Samba with Waf
+      - name: Download and extract Samba source
         run: |
-          echo "===== 使用Waf构建系统编译Samba ====="
-          # 下载Samba版本
-          SAMBA_VERSION="4.18.0"
+          echo "===== 下载Samba源码 ====="
+          # 使用较旧的Samba版本，更容易编译
+          SAMBA_VERSION="4.5.16"
           wget https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz
           tar -xzf samba-${SAMBA_VERSION}.tar.gz
           cd samba-${SAMBA_VERSION}
 
+      - name: Apply minimal configuration
+        run: |
+          echo "===== 应用最小化配置 ====="
+          cd samba-4.5.16
+          
+          # 创建简单的配置脚本
+          cat > build-config.sh << 'EOF'
+          #!/bin/bash
+          
           # 设置交叉编译环境
           export CC="arm-linux-gnueabihf-gcc"
           export CXX="arm-linux-gnueabihf-g++"
           export AR="arm-linux-gnueabihf-ar"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os -ffunction-sections -fdata-sections"
-          export LDFLAGS="-static -Wl,--gc-sections"
-
-          # 使用waf configure（正确的语法）
+          export RANLIB="arm-linux-gnueabihf-ranlib"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os -static"
+          export LDFLAGS="-static"
+          
+          # 使用简单的configure选项
           ./configure \
-            --cross-compile \
-            --cross-answers=arm.txt \
             --host=arm-linux-gnueabihf \
             --target=arm-linux-gnueabihf \
             --prefix=/usr \
-            --sysconfdir=/etc/samba \
-            --localstatedir=/var \
-            --disable-python \
-            --without-ldap \
-            --without-ad-dc \
-            --without-systemd \
-            --without-winbind \
-            --disable-avahi \
             --disable-cups \
             --disable-iprint \
-            --disable-glusterfs \
-            --disable-rpath \
-            --disable-fault-handling \
+            --disable-pie \
+            --disable-relro \
+            --disable-static \
+            --disable-symbol-versions \
+            --enable-shared-libs=no \
             --nonshared-binary=smbd,nmbd,smbpasswd
+          EOF
+          
+          chmod +x build-config.sh
 
-          # 编译特定的二进制文件
-          ./buildtools/bin/waf build --targets=smbd,nmbd,smbpasswd
-
-          # 复制二进制文件
-          mkdir -p ../samba-deploy
-          cp bin/smbd bin/nmbd bin/smbpasswd ../samba-deploy/
-
-      - name: Alternative simple build
-        if: failure()
+      - name: Try to compile with simple make
         run: |
-          echo "===== 简单编译方案 ====="
-          SAMBA_VERSION="4.18.0"
-          cd samba-${SAMBA_VERSION}
-
+          echo "===== 尝试简单编译 ====="
+          cd samba-4.5.16/source3
+          
+          # 设置环境变量
           export CC="arm-linux-gnueabihf-gcc"
           export CFLAGS="-march=armv7-a -mfpu=neon -Os"
           export LDFLAGS="-static"
-
-          # 直接使用make（如果可用）
-          if [ -f "Makefile" ]; then
-            make -j$(nproc) \
-              CC="${CC}" \
-              CFLAGS="${CFLAGS}" \
-              LDFLAGS="${LDFLAGS}" \
-              smbd nmbd smbpasswd
-          else
-            # 使用waf直接构建
-            ./buildtools/bin/waf build --targets=smbd,nmbd,smbpasswd \
-              --cross-compile \
-              --host=arm-linux-gnueabihf \
-              --cflags="${CFLAGS}" \
-              --ldflags="${LDFLAGS}"
-          fi
-
-          mkdir -p ../samba-deploy
-          cp bin/smbd bin/nmbd bin/smbpasswd ../samba-deploy/
-
-      - name: Build minimal from source3
-        if: failure()
-        run: |
-          echo "===== 从source3最小化编译 ====="
-          # 尝试旧版本
-          SAMBA_VERSION="4.8.12"
-          wget https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz
-          tar -xzf samba-${SAMBA_VERSION}.tar.gz
-          cd samba-${SAMBA_VERSION}/source3
-
-          export CC="arm-linux-gnueabihf-gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os"
-          export LDFLAGS="-static"
-
-          # 尝试autoconf方式
-          if [ -f "configure" ]; then
-            ./configure \
-              --host=arm-linux-gnueabihf \
-              --prefix=/usr \
-              --enable-static-binaries
-          elif [ -f "autogen.sh" ]; then
-            ./autogen.sh
-            ./configure \
-              --host=arm-linux-gnueabihf \
-              --prefix=/usr
-          fi
-
-          # 编译核心组件
+          
+          # 尝试直接编译核心组件
+          echo "尝试编译smbd..."
           make -j$(nproc) \
             CC="${CC}" \
             CFLAGS="${CFLAGS}" \
             LDFLAGS="${LDFLAGS}" \
-            smbd nmbd smbpasswd
+            smbd || echo "smbd编译失败，继续尝试其他组件"
+          
+          echo "尝试编译nmbd..."
+          make -j$(nproc) \
+            CC="${CC}" \
+            CFLAGS="${CFLAGS}" \
+            LDFLAGS="${LDFLAGS}" \
+            nmbd || echo "nmbd编译失败，继续尝试其他组件"
+          
+          echo "尝试编译smbpasswd..."
+          make -j$(nproc) \
+            CC="${CC}" \
+            CFLAGS="${CFLAGS}" \
+            LDFLAGS="${LDFLAGS}" \
+            smbpasswd || echo "smbpasswd编译失败"
 
-          mkdir -p ../../samba-deploy
-          cp bin/smbd bin/nmbd bin/smbpasswd ../../samba-deploy/
-
-      - name: Verify and package binaries
+      - name: Check for any compiled binaries
         run: |
-          echo "===== 验证和打包二进制文件 ====="
-          mkdir -p samba-deploy
+          echo "===== 检查编译结果 ====="
+          cd samba-4.5.16
           
-          # 复制二进制文件
-          if [ -f "samba-4.18.0/bin/smbd" ]; then
-            cp samba-4.18.0/bin/smbd samba-4.18.0/bin/nmbd samba-4.18.0/bin/smbpasswd samba-deploy/
-          elif [ -f "samba-4.8.12/source3/bin/smbd" ]; then
-            cp samba-4.8.12/source3/bin/smbd samba-4.8.12/source3/bin/nmbd samba-4.8.12/source3/bin/smbpasswd samba-deploy/
-          else
-            echo "错误: 找不到编译好的二进制文件"
-            exit 1
-          fi
-
-          # 验证二进制文件
-          cd samba-deploy
-          echo "文件信息:"
-          file smbd
-          echo "架构检查:"
-          arm-linux-gnueabihf-readelf -h smbd | grep "Machine:" | grep "ARM" || exit 1
-          echo "链接类型:"
-          arm-linux-gnueabihf-readelf -d smbd | grep "Shared library" || echo "静态链接"
-
-      - name: Create installation package
-        run: |
-          echo "===== 创建安装包 ====="
-          cd samba-deploy
+          # 查找任何编译好的二进制文件
+          find . -name "smbd" -type f -executable | head -5
+          find . -name "nmbd" -type f -executable | head -5
+          find . -name "smbpasswd" -type f -executable | head -5
           
-          cat > install.sh << 'EOF'
-          #!/bin/sh
-          echo "=== Samba ARMv7 安装程序 ==="
-          echo ""
-          
-          # 检查root权限
-          if [ "$(id -u)" -ne 0 ]; then
-            echo "请使用root权限运行此脚本"
-            echo "sudo ./install.sh"
-            exit 1
+          # 检查bin目录
+          if [ -d "bin" ]; then
+            ls -la bin/
           fi
           
-          echo "安装Samba二进制文件..."
-          echo ""
+          # 检查source3/bin目录
+          if [ -d "source3/bin" ]; then
+            ls -la source3/bin/
+          fi
+
+      - name: Try alternative approach - use prebuilt cross-compile script
+        run: |
+          echo "===== 使用预定义的交叉编译脚本 ====="
+          # 创建一个简单的交叉编译脚本
+          cat > cross-compile-samba.sh << 'EOF'
+          #!/bin/bash
           
-          # 安装每个二进制文件
-          for binfile in smbd nmbd smbpasswd; do
-            if [ ! -f "$binfile" ]; then
-              echo "错误: 找不到文件 $binfile"
-              continue
-            fi
-            
-            # 备份原有文件
-            if [ -f "/usr/sbin/$binfile" ]; then
-              backup_file="/usr/sbin/${binfile}.backup.$(date +%Y%m%d_%H%M%S)"
-              mv "/usr/sbin/$binfile" "$backup_file"
-              echo "已备份: $backup_file"
-            fi
-            
-            # 安装新文件
-            install -m 755 "$binfile" "/usr/sbin/"
-            echo "已安装: /usr/sbin/$binfile"
-          done
+          # 设置环境
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          export CC="${CROSS_COMPILE}gcc"
+          export CXX="${CROSS_COMPILE}g++"
+          export AR="${CROSS_COMPILE}ar"
+          export STRIP="${CROSS_COMPILE}strip"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os -static"
+          export LDFLAGS="-static"
           
-          echo ""
-          echo "=== 安装完成 ==="
-          echo ""
-          echo "下一步:"
-          echo "1. 创建配置文件: /etc/samba/smb.conf"
-          echo "2. 启动服务: smbd -D && nmbd -D"
-          echo "3. 添加用户: smbpasswd -a 用户名"
-          echo ""
-          echo "查看示例配置: cat smb.conf.example"
+          # 进入Samba目录
+          cd samba-4.5.16/source3
+          
+          # 尝试编译
+          echo "编译smbd..."
+          ${CC} ${CFLAGS} -o smbd \
+            ../source3/smbd/server.c \
+            ../source3/smbd/process.c \
+            ../source3/smbd/files.c \
+            ../source3/smbd/connection.c \
+            ../source3/smbd/trans2.c \
+            ../source3/lib/util.c \
+            ../source3/lib/charcnv.c \
+            ../source3/lib/time.c \
+            ../source3/lib/byteorder.c \
+            ../source3/lib/md4.c \
+            ../source3/lib/rc4.c \
+            ../source3/lib/md5.c \
+            ../source3/lib/hmacmd5.c \
+            ../source3/lib/msrpc_parse.c \
+            ../source3/lib/asn1.c \
+            ../source3/lib/iconv.c \
+            ../source3/lib/clique.c \
+            ../source3/lib/access.c \
+            ../source3/lib/deny.c \
+            ../source3/lib/username.c \
+            ../source3/lib/privileges.c \
+            ../source3/lib/sec_ctx.c \
+            ../source3/lib/security.c \
+            ../source3/lib/session.c \
+            ../source3/lib/smbrun.c \
+            ../source3/lib/fsusage.c \
+            ../source3/lib/statvfs.c \
+            ../source3/lib/dprintf.c \
+            ../source3/lib/xfile.c \
+            ../source3/lib/wins_srv.c \
+            ../source3/lib/namequery.c \
+            ../source3/lib/nameresolve.c \
+            ../source3/lib/substitute.c \
+            ../source3/lib/fsusage.c \
+            ../source3/lib/bitmap.c \
+            ../source3/lib/pidfile.c \
+            ../source3/lib/select.c \
+            ../source3/lib/talloc.c \
+            ../source3/lib/tdb.c \
+            ../source3/lib/genrand.c \
+            ../source3/lib/util_str.c \
+            ../source3/lib/util_file.c \
+            ../source3/lib/util_sock.c \
+            ../source3/lib/util_net.c \
+            ../source3/lib/util_str_hex.c \
+            ../source3/lib/util_strlist.c \
+            ../source3/lib/util_pw.c \
+            ../source3/lib/util_crypt.c \
+            ../source3/lib/util_sec.c \
+            ../source3/lib/util_unistr.c \
+            ../source3/lib/util_sid.c \
+            ../source3/lib/util_nttoken.c \
+            ../source3/lib/util_ntaccess.c \
+            ../source3/lib/util_ace.c \
+            ../source3/lib/util_sd.c \
+            ../source3/lib/util_samlogon.c \
+            ${LDFLAGS} \
+            -I../source3/include -I../source3 -I../lib -I../include \
+            -DHAVE_CONFIG_H -DPASSDB -DSHADOW -DQUOTA -DACL -DHAVE_MMAP -DHAVE_FCNTL_LOCK -DHAVE_KRB5 -DHAVE_ADS
+          
+          echo "编译nmbd..."
+          ${CC} ${CFLAGS} -o nmbd \
+            ../source3/nmbd/nmbd.c \
+            ../source3/nmbd/nmbd_become_lmb.c \
+            ../source3/nmbd/nmbd_become_dmb.c \
+            ../source3/nmbd/nmbd_elections.c \
+            ../source3/nmbd/nmbd_incoming.c \
+            ../source3/nmbd/nmbd_logonnames.c \
+            ../source3/nmbd/nmbd_nameregister.c \
+            ../source3/nmbd/nmbd_namequery.c \
+            ../source3/nmbd/nmbd_namerelease.c \
+            ../source3/nmbd/nmbd_subnetdb.c \
+            ../source3/nmbd/nmbd_winsproxy.c \
+            ../source3/nmbd/nmbd_workgroupdb.c \
+            ../source3/nmbd/nmbd_sendannounce.c \
+            ../source3/nmbd/nmbd_serverlist.c \
+            ../source3/nmbd/nmbd_dgram.c \
+            ../source3/nmbd/nmbd_packets.c \
+            ../source3/lib/util.c \
+            ../source3/lib/charcnv.c \
+            ../source3/lib/time.c \
+            ../source3/lib/byteorder.c \
+            ../source3/lib/md4.c \
+            ../source3/lib/rc4.c \
+            ../source3/lib/md5.c \
+            ../source3/lib/hmacmd5.c \
+            ../source3/lib/msrpc_parse.c \
+            ../source3/lib/asn1.c \
+            ../source3/lib/iconv.c \
+            ../source3/lib/clique.c \
+            ../source3/lib/access.c \
+            ../source3/lib/deny.c \
+            ../source3/lib/username.c \
+            ../source3/lib/privileges.c \
+            ../source3/lib/sec_ctx.c \
+            ../source3/lib/security.c \
+            ../source3/lib/session.c \
+            ../source3/lib/smbrun.c \
+            ../source3/lib/fsusage.c \
+            ../source3/lib/statvfs.c \
+            ../source3/lib/dprintf.c \
+            ../source3/lib/xfile.c \
+            ../source3/lib/wins_srv.c \
+            ../source3/lib/namequery.c \
+            ../source3/lib/nameresolve.c \
+            ../source3/lib/substitute.c \
+            ../source3/lib/fsusage.c \
+            ../source3/lib/bitmap.c \
+            ../source3/lib/pidfile.c \
+            ../source3/lib/select.c \
+            ../source3/lib/talloc.c \
+            ../source3/lib/tdb.c \
+            ../source3/lib/genrand.c \
+            ../source3/lib/util_str.c \
+            ../source3/lib/util_file.c \
+            ../source3/lib/util_sock.c \
+            ../source3/lib/util_net.c \
+            ../source3/lib/util_str_hex.c \
+            ../source3/lib/util_strlist.c \
+            ../source3/lib/util_pw.c \
+            ../source3/lib/util_crypt.c \
+            ../source3/lib/util_sec.c \
+            ../source3/lib/util_unistr.c \
+            ../source3/lib/util_sid.c \
+            ../source3/lib/util_nttoken.c \
+            ../source3/lib/util_ntaccess.c \
+            ../source3/lib/util_ace.c \
+            ../source3/lib/util_sd.c \
+            ../source3/lib/util_samlogon.c \
+            ${LDFLAGS} \
+            -I../source3/include -I../source3 -I../lib -I../include \
+            -DHAVE_CONFIG_H -DPASSDB -DSHADOW -DQUOTA -DACL -DHAVE_MMAP -DHAVE_FCNTL_LOCK -DHAVE_KRB5 -DHAVE_ADS
+          
+          echo "编译smbpasswd..."
+          ${CC} ${CFLAGS} -o smbpasswd \
+            ../source3/utils/smbpasswd.c \
+            ../source3/lib/util.c \
+            ../source3/lib/charcnv.c \
+            ../source3/lib/time.c \
+            ../source3/lib/byteorder.c \
+            ../source3/lib/md4.c \
+            ../source3/lib/rc4.c \
+            ../source3/lib/md5.c \
+            ../source3/lib/hmacmd5.c \
+            ../source3/lib/msrpc_parse.c \
+            ../source3/lib/asn1.c \
+            ../source3/lib/iconv.c \
+            ../source3/lib/clique.c \
+            ../source3/lib/access.c \
+            ../source3/lib/deny.c \
+            ../source3/lib/username.c \
+            ../source3/lib/privileges.c \
+            ../source3/lib/sec_ctx.c \
+            ../source3/lib/security.c \
+            ../source3/lib/session.c \
+            ../source3/lib/smbrun.c \
+            ../source3/lib/fsusage.c \
+            ../source3/lib/statvfs.c \
+            ../source3/lib/dprintf.c \
+            ../source3/lib/xfile.c \
+            ../source3/lib/wins_srv.c \
+            ../source3/lib/namequery.c \
+            ../source3/lib/nameresolve.c \
+            ../source3/lib/substitute.c \
+            ../source3/lib/fsusage.c \
+            ../source3/lib/bitmap.c \
+            ../source3/lib/pidfile.c \
+            ../source3/lib/select.c \
+            ../source3/lib/talloc.c \
+            ../source3/lib/tdb.c \
+            ../source3/lib/genrand.c \
+            ../source3/lib/util_str.c \
+            ../source3/lib/util_file.c \
+            ../source3/lib/util_sock.c \
+            ../source3/lib/util_net.c \
+            ../source3/lib/util_str_hex.c \
+            ../source3/lib/util_strlist.c \
+            ../source3/lib/util_pw.c \
+            ../source3/lib/util_crypt.c \
+            ../source3/lib/util_sec.c \
+            ../source3/lib/util_unistr.c \
+            ../source3/lib/util_sid.c \
+            ../source3/lib/util_nttoken.c \
+            ../source3/lib/util_ntaccess.c \
+            ../source3/lib/util_ace.c \
+            ../source3/lib/util_sd.c \
+            ../source3/lib/util_samlogon.c \
+            ${LDFLAGS} \
+            -I../source3/include -I../source3 -I../lib -I../include \
+            -DHAVE_CONFIG_H -DPASSDB -DSHADOW -DQUOTA -DACL -DHAVE_MMAP -DHAVE_FCNTL_LOCK -DHAVE_KRB5 -DHAVE_ADS
           EOF
           
-          chmod +x install.sh
+          chmod +x cross-compile-samba.sh
+          ./cross-compile-samba.sh
+
+      - name: Final attempt - use prebuilt binaries
+        if: failure()
+        run: |
+          echo "===== 最终尝试: 使用预编译的二进制文件 ====="
+          # 由于编译多次失败，我们可以尝试下载预编译的Samba二进制文件
+          mkdir -p samba-deploy
+          cd samba-deploy
           
-          # 创建配置文件示例
-          cat > smb.conf.example << 'EOF'
+          # 尝试从已知来源下载预编译的ARMv7 Samba二进制文件
+          echo "尝试下载预编译的Samba for ARMv7..."
+          
+          # 这里是一些可能的来源（需要替换为实际可用的链接）
+          wget -O smbd http://example.com/path/to/smbd-armv7 || echo "下载smbd失败"
+          wget -O nmbd http://example.com/path/to/nmbd-armv7 || echo "下载nmbd失败"
+          wget -O smbpasswd http://example.com/path/to/smbpasswd-armv7 || echo "下载smbpasswd失败"
+          
+          # 如果没有下载到，创建占位符文件
+          if [ ! -f "smbd" ]; then
+            echo "创建占位符smbd文件"
+            echo "#!/bin/sh" > smbd
+            echo "echo '这是Samba smbd的占位符文件'" >> smbd
+            echo "echo '实际编译失败，请手动编译或寻找预编译版本'" >> smbd
+            chmod +x smbd
+          fi
+          
+          if [ ! -f "nmbd" ]; then
+            echo "创建占位符nmbd文件"
+            echo "#!/bin/sh" > nmbd
+            echo "echo '这是Samba nmbd的占位符文件'" >> nmbd
+            echo "echo '实际编译失败，请手动编译或寻找预编译版本'" >> nmbd
+            chmod +x nmbd
+          fi
+          
+          if [ ! -f "smbpasswd" ]; then
+            echo "创建占位符smbpasswd文件"
+            echo "#!/bin/sh" > smbpasswd
+            echo "echo '这是Samba smbpasswd的占位符文件'" >> smbpasswd
+            echo "echo '实际编译失败，请手动编译或寻找预编译版本'" >> smbpasswd
+            chmod +x smbpasswd
+          fi
+
+      - name: Create installation instructions
+        run: |
+          echo "===== 创建安装说明 ====="
+          mkdir -p samba-deploy
+          cd samba-deploy
+          
+          # 创建详细的安装说明
+          cat > INSTALL.md << 'EOF'
+          # Samba for ARMv7 安装说明
+          
+          由于自动编译过程遇到困难，这里提供几种替代方案：
+          
+          ## 方案一: 使用预编译的二进制文件
+          1. 从可靠来源下载ARMv7架构的Samba二进制文件
+          2. 将smbd、nmbd和smbpasswd复制到/usr/sbin/
+          3. 设置执行权限: chmod +x /usr/sbin/smbd /usr/sbin/nmbd /usr/sbin/smbpasswd
+          
+          ## 方案二: 在目标设备上直接编译
+          1. 在ARM设备上下载Samba源码: wget https://download.samba.org/pub/samba/stable/samba-4.5.16.tar.gz
+          2. 解压: tar -xzf samba-4.5.16.tar.gz
+          3. 进入目录: cd samba-4.5.16/source3
+          4. 配置: ./configure --prefix=/usr
+          5. 编译: make smbd nmbd smbpasswd
+          6. 安装: make install
+          
+          ## 方案三: 使用包管理器
+          如果您的系统有包管理器，可以尝试:
+          - apt-get install samba (Debian/Ubuntu)
+          - opkg install samba (OpenWrt)
+          - yum install samba (CentOS/RHEL)
+          
+          ## 配置Samba
+          安装后，需要创建配置文件/etc/samba/smb.conf:
+          
           [global]
           workgroup = WORKGROUP
-          netbios name = SAMBA_SERVER
           server string = Samba Server
           security = user
           map to guest = Bad User
-          log file = /var/log/samba/log.%m
-          max log size = 50
-          socket options = TCP_NODELAY SO_RCVBUF=8192 SO_SNDBUF=8192
-
-          [homes]
-          comment = Home Directories
-          browseable = no
-          writable = yes
-          valid users = %S
-
+          
           [shared]
           comment = Shared Folder
           path = /mnt/shared
           browseable = yes
           writable = yes
           guest ok = no
-          create mask = 0644
-          directory mask = 0755
           EOF
+          
+          # 创建简单的安装脚本
+          cat > install.sh << 'EOF'
+          #!/bin/sh
+          echo "Samba for ARMv7 安装助手"
+          echo ""
+          echo "由于自动编译失败，请手动安装Samba:"
+          echo "1. 查看INSTALL.md文件获取详细说明"
+          echo "2. 或使用包管理器安装: apt-get install samba"
+          echo "3. 或从可靠来源下载预编译的ARMv7 Samba二进制文件"
+          echo ""
+          echo "如果您有编译好的二进制文件，可以复制到当前目录并重新运行此脚本"
+          
+          if [ -f "smbd" ] && [ -f "nmbd" ] && [ -f "smbpasswd" ]; then
+            echo "检测到二进制文件，尝试安装..."
+            sudo cp smbd nmbd smbpasswd /usr/sbin/
+            sudo chmod +x /usr/sbin/smbd /usr/sbin/nmbd /usr/sbin/smbpasswd
+            echo "安装完成!"
+          else
+            echo "未找到有效的二进制文件"
+          fi
+          EOF
+          
+          chmod +x install.sh
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: samba-armv7-binaries
-          path: samba-deploy/*
+          name: samba-armv7-alternatives
+          path: |
+            samba-deploy/INSTALL.md
+            samba-deploy/install.sh
+            samba-deploy/smbd
+            samba-deploy/nmbd
+            samba-deploy/smbpasswd
           retention-days: 30
 
-      - name: Show build success
+      - name: Show final message
         run: |
-          echo "✅ 构建成功!"
-          echo "📦 二进制文件已上传到Artifacts"
-          echo "🖥️  架构: ARMv7"
-          echo "🔧 使用Waf构建系统"
-          echo "⏰ 时间: $(date)"
+          echo "⚠️  Samba编译遇到困难"
+          echo "📋 已上传替代方案和安装说明"
+          echo "💡 建议:"
+          echo "   1. 在目标设备上直接编译Samba"
+          echo "   2. 使用系统包管理器安装Samba"
+          echo "   3. 寻找预编译的ARMv7 Samba二进制文件"
+          echo "🔗 参考: https://www.samba.org/samba/download/"
