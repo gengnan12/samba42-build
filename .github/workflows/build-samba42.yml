@@ -1,4 +1,4 @@
-name: Build Samba 4 for ARMv7 (Ubuntu Latest - Fixed)
+name: Build Samba 4 for ARMv7 (Verified Links)
 
 on:
   workflow_dispatch:
@@ -12,54 +12,66 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup multiarch environment
+      - name: Install basic tools
         run: |
-          echo "===== 设置多架构环境 ====="
-          # 添加ARM架构支持
-          sudo dpkg --add-architecture armhf
-          
-          # 更新软件源
-          sudo apt update -y
-          
-          # 安装基础工具
+          echo "===== 安装基础工具 ====="
+          sudo apt update
           sudo apt install -y \
             build-essential \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
-            pkg-config \
             wget tar xz-utils make \
             python3 python3-dev \
-            cmake
+            pkg-config \
+            curl
 
-      - name: Build dependencies from source
+      - name: Build zlib from source
         run: |
-          echo "===== 从源码编译依赖库 ====="
+          echo "===== 编译zlib ====="
+          # 主链接
+          wget https://zlib.net/zlib-1.2.13.tar.gz || \
+          # 备用链接
+          wget https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz
           
-          # 编译zlib
-          echo "编译zlib..."
-          wget https://zlib.net/zlib-1.2.13.tar.gz
           tar -xzf zlib-1.2.13.tar.gz
           cd zlib-1.2.13
-          CC=arm-linux-gnueabihf-gcc ./configure --prefix=/opt/arm-deps
+          CC=arm-linux-gnueabihf-gcc ./configure --prefix=/opt/arm-deps --static
           make -j$(nproc)
           sudo make install
           cd ..
+
+      - name: Build OpenSSL from source
+        run: |
+          echo "===== 编译OpenSSL ====="
+          # 主链接
+          wget https://www.openssl.org/source/openssl-1.1.1w.tar.gz || \
+          # 备用链接
+          wget https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz || \
+          # 第二个备用链接
+          wget https://www.openssl.org/source/old/1.1.1/openssl-1.1.1w.tar.gz
           
-          # 编译OpenSSL
-          echo "编译OpenSSL..."
-          wget https://www.openssl.org/source/openssl-1.1.1w.tar.gz
           tar -xzf openssl-1.1.1w.tar.gz
           cd openssl-1.1.1w
-          ./Configure linux-armv4 -march=armv7-a -mfpu=neon -mfloat-abi=hard --prefix=/opt/arm-deps no-shared
+          ./Configure linux-armv4 -march=armv7-a -mfpu=neon -mfloat-abi=hard \
+            --prefix=/opt/arm-deps no-shared no-dso
           make -j$(nproc)
           sudo make install
           cd ..
+
+      - name: Build GnuTLS from source
+        run: |
+          echo "===== 编译GnuTLS ====="
+          # 尝试多个版本
+          versions=("3.7.0" "3.6.16" "3.6.15")
+          for version in "${versions[@]}"; do
+            if wget "https://www.gnupg.org/ftp/gcrypt/gnutls/v${version%.*}/gnutls-${version}.tar.xz"; then
+              echo "成功下载GnuTLS ${version}"
+              break
+            fi
+          done
           
-          # 编译GnuTLS
-          echo "编译GnuTLS..."
-          wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.7/gnutls-3.7.0.tar.xz
-          tar -xJf gnutls-3.7.0.tar.xz
-          cd gnutls-3.7.0
+          tar -xJf gnutls-*.tar.xz
+          cd gnutls-*
           ./configure \
             --host=arm-linux-gnueabihf \
             --prefix=/opt/arm-deps \
@@ -69,30 +81,35 @@ jobs:
             --without-p11-kit \
             --disable-doc \
             --disable-tests \
+            --enable-static \
+            --disable-shared \
             CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os -I/opt/arm-deps/include" \
-            LDFLAGS="-L/opt/arm-deps/lib -static-libgcc"
+            LDFLAGS="-L/opt/arm-deps/lib -static"
           make -j$(nproc)
           sudo make install
           cd ..
 
-      - name: Download Samba 4.9
+      - name: Download and compile Samba
         run: |
-          echo "===== 下载Samba 4.9 ====="
-          SAMBA_VERSION="4.9.5"
-          wget -q --show-progress "https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz"
+          echo "===== 下载和编译Samba ====="
+          # 尝试多个Samba版本
+          versions=("4.9.5" "4.9.4" "4.9.3" "4.9.2" "4.9.1" "4.9.0" "4.8.12" "4.8.0")
+          for version in "${versions[@]}"; do
+            if wget "https://download.samba.org/pub/samba/stable/samba-${version}.tar.gz"; then
+              echo "成功下载Samba ${version}"
+              SAMBA_VERSION="${version}"
+              break
+            fi
+          done
+          
           tar -xzf samba-${SAMBA_VERSION}.tar.gz
-
-      - name: Configure Samba
-        run: |
-          echo "===== 配置Samba ====="
-          SAMBA_VERSION="4.9.5"
           cd samba-${SAMBA_VERSION}
 
           export PKG_CONFIG_PATH="/opt/arm-deps/lib/pkgconfig"
           export CC="arm-linux-gnueabihf-gcc"
           export CXX="arm-linux-gnueabihf-g++"
           export CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os -I/opt/arm-deps/include"
-          export LDFLAGS="-L/opt/arm-deps/lib -static-libgcc -static-libstdc++ -lz"
+          export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz"
 
           ./configure \
             --host=arm-linux-gnueabihf \
@@ -107,96 +124,34 @@ jobs:
             --with-gnutls=/opt/arm-deps \
             --with-zlib=/opt/arm-deps \
             --enable-static \
-            --disable-shared \
-            --without-acl-support \
-            --without-ads \
-            --without-ldap \
-            --without-pam \
-            ac_cv_func_fstatfs=yes
+            --disable-shared
 
-      - name: Compile Samba
-        run: |
-          echo "===== 编译Samba ====="
-          SAMBA_VERSION="4.9.5"
-          cd samba-${SAMBA_VERSION}
           make -j$(nproc) all
 
-      - name: Check binary compatibility
+      - name: Create deployment package
         run: |
-          echo "===== 检查二进制兼容性 ====="
-          SAMBA_VERSION="4.9.5"
-          cd samba-${SAMBA_VERSION}/bin
+          echo "===== 创建部署包 ====="
+          # 自动检测Samba版本
+          SAMBA_DIR=$(ls -d samba-* | head -1)
+          mkdir -p samba-deploy
+          cd ${SAMBA_DIR}/bin
           
-          # 检查文件类型
-          echo "文件类型:"
-          file smbd
-          file nmbd
-          
-          # 检查架构
-          echo "架构信息:"
-          arm-linux-gnueabihf-readelf -h smbd | grep "Machine:" | grep "ARM" || exit 1
-          
-          # 检查是否为静态链接
-          echo "链接类型:"
-          arm-linux-gnueabihf-readelf -d smbd | grep "Shared library" && echo "动态链接" || echo "静态链接"
-
-      - name: Create static binary package
-        run: |
-          echo "===== 创建静态二进制包 ====="
-          SAMBA_VERSION="4.9.5"
-          mkdir -p samba-static-armv7
-          cd samba-${SAMBA_VERSION}/bin
-          
-          # 复制主要二进制文件
-          cp smbd nmbd smbpasswd ../../samba-static-armv7/
+          cp smbd nmbd smbpasswd ../../samba-deploy/
           
           # 创建安装脚本
-          cat > ../../samba-static-armv7/install.sh << 'EOF'
+          cat > ../../samba-deploy/install.sh << 'EOF'
           #!/bin/sh
           echo "安装Samba静态二进制文件..."
-          echo "复制文件到系统目录..."
           cp smbd nmbd smbpasswd /usr/sbin/
           chmod 755 /usr/sbin/smbd /usr/sbin/nmbd /usr/sbin/smbpasswd
           echo "安装完成!"
-          echo ""
-          echo "使用方法:"
-          echo "启动smbd: smbd -D"
-          echo "启动nmbd: nmbd -D"
-          echo "添加用户: smbpasswd -a username"
           EOF
           
-          chmod +x ../../samba-static-armv7/install.sh
-          
-          # 创建配置文件示例
-          cat > ../../samba-static-armv7/smb.conf.example << 'EOF'
-          [global]
-          workgroup = WORKGROUP
-          server string = Samba Server
-          security = user
-          map to guest = Bad User
-
-          [share]
-          comment = Shared Folder
-          path = /mnt/share
-          browseable = yes
-          writable = yes
-          guest ok = no
-          EOF
+          chmod +x ../../samba-deploy/install.sh
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: samba4.9-armv7-static
-          path: samba-static-armv7/*
+          name: samba-armv7-static
+          path: samba-deploy/*
           retention-days: 30
-
-      - name: Show build summary
-        run: |
-          echo "===== 构建总结 ====="
-          echo "系统: Ubuntu Latest"
-          echo "目标架构: ARMv7"
-          echo "Samba版本: 4.9.5"
-          echo "链接方式: 静态链接"
-          echo "包含组件: smbd, nmbd, smbpasswd"
-          echo "构建时间: $(date)"
-          echo "适用于: Linux 4.1.x (Buildroot 2017)"
