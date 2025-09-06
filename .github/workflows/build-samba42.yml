@@ -1,4 +1,4 @@
-name: Build Samba 4 for ARMv7 (With Nettle and GMP)
+name: Build Samba 4 for ARMv7 (Simplified)
 
 on:
   workflow_dispatch:
@@ -42,32 +42,6 @@ jobs:
           sudo make install
           cd ..
 
-      - name: Build GMP from source
-        run: |
-          echo "===== 编译GMP ====="
-          wget https://gmplib.org/download/gmp/gmp-6.2.1.tar.xz || \
-          wget https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz
-          
-          tar -xJf gmp-6.2.1.tar.xz
-          cd gmp-6.2.1
-          
-          export CC="arm-linux-gnueabihf-gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS"
-          export LDFLAGS="-static"
-          
-          ./configure \
-            --host=arm-linux-gnueabihf \
-            --prefix=/opt/arm-deps \
-            --enable-static \
-            --disable-shared \
-            --disable-cxx \
-            CFLAGS="${CFLAGS}" \
-            LDFLAGS="${LDFLAGS}"
-          
-          make -j$(nproc)
-          sudo make install
-          cd ..
-
       - name: Build OpenSSL from source
         run: |
           echo "===== 编译OpenSSL ====="
@@ -87,6 +61,7 @@ jobs:
             no-shared \
             no-dso \
             no-asm \
+            no-tests \
             ${CFLAGS}
           
           sed -i 's/^CC=.*/CC=$(CROSS_COMPILE)gcc/' Makefile
@@ -96,85 +71,21 @@ jobs:
           sudo make install
           cd ..
 
-      - name: Build Nettle with GMP support
+      - name: Download and compile Samba 4.8 (with built-in crypto)
         run: |
-          echo "===== 编译Nettle (带GMP支持) ====="
-          wget https://ftp.gnu.org/gnu/nettle/nettle-3.4.1.tar.gz || \
-          wget https://mirrors.kernel.org/gnu/nettle/nettle-3.4.1.tar.gz
-          
-          tar -xzf nettle-3.4.1.tar.gz
-          cd nettle-3.4.1
-          
-          export CC="arm-linux-gnueabihf-gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS -I/opt/arm-deps/include"
-          export LDFLAGS="-L/opt/arm-deps/lib -static"
-          export PKG_CONFIG_PATH="/opt/arm-deps/lib/pkgconfig"
-          
-          # 配置nettle启用GMP支持
-          ./configure \
-            --host=arm-linux-gnueabihf \
-            --prefix=/opt/arm-deps \
-            --enable-static \
-            --disable-shared \
-            --disable-documentation \
-            --enable-mini-gmp \
-            CFLAGS="${CFLAGS}" \
-            LDFLAGS="${LDFLAGS}" \
-            --with-include-path=/opt/arm-deps/include \
-            --with-lib-path=/opt/arm-deps/lib
-          
-          make -j$(nproc)
-          sudo make install
-          cd ..
-
-      - name: Build GnuTLS from source
-        run: |
-          echo "===== 编译GnuTLS ====="
-          wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.6/gnutls-3.6.16.tar.xz || \
-          wget https://ftp.gnu.org/gnu/gnutls/gnutls-3.6.16.tar.xz
-          
-          tar -xJf gnutls-3.6.16.tar.xz
-          cd gnutls-3.6.16
-          
-          export CC="arm-linux-gnueabihf-gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS -I/opt/arm-deps/include"
-          export LDFLAGS="-L/opt/arm-deps/lib -static"
-          export PKG_CONFIG_PATH="/opt/arm-deps/lib/pkgconfig"
-          
-          ./configure \
-            --host=arm-linux-gnueabihf \
-            --prefix=/opt/arm-deps \
-            --with-libz-prefix=/opt/arm-deps \
-            --with-included-libtasn1 \
-            --with-included-unistring \
-            --without-p11-kit \
-            --disable-doc \
-            --disable-tests \
-            --enable-static \
-            --disable-shared \
-            CFLAGS="${CFLAGS}" \
-            LDFLAGS="${LDFLAGS}"
-          
-          make -j$(nproc)
-          sudo make install
-          cd ..
-
-      - name: Download and compile Samba 4.8
-        run: |
-          echo "===== 下载和编译Samba ====="
+          echo "===== 下载和编译Samba (使用内置加密) ====="
           wget https://download.samba.org/pub/samba/stable/samba-4.8.12.tar.gz || \
           wget https://download.samba.org/pub/samba/old/4.8.12/samba-4.8.12.tar.gz
           
           tar -xzf samba-4.8.12.tar.gz
           cd samba-4.8.12
 
-          export PKG_CONFIG_PATH="/opt/arm-deps/lib/pkgconfig"
           export CC="arm-linux-gnueabihf-gcc"
           export CXX="arm-linux-gnueabihf-g++"
           export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS -I/opt/arm-deps/include"
-          export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz -lnettle -lhogweed -lgmp"
+          export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz"
 
-          # 配置Samba，确保找到所有依赖
+          # 配置Samba使用内置加密，避免复杂的GnuTLS依赖
           ./configure \
             --host=arm-linux-gnueabihf \
             --prefix=/usr \
@@ -185,26 +96,61 @@ jobs:
             --without-ad-dc \
             --without-systemd \
             --without-winbind \
-            --with-gnutls=/opt/arm-deps \
             --with-zlib=/opt/arm-deps \
             --enable-static \
             --disable-shared \
             --without-acl-support \
             --without-ads \
             --without-pam \
-            nettle_CFLAGS="-I/opt/arm-deps/include" \
-            nettle_LIBS="-L/opt/arm-deps/lib -lnettle -lhogweed" \
-            hogweed_CFLAGS="-I/opt/arm-deps/include" \
-            hogweed_LIBS="-L/opt/arm-deps/lib -lhogweed" \
-            ac_cv_func_fstatfs=yes
+            --without-gnutls \
+            --with-builtin-libraries=md5,des,sha256,sha512,arc4 \
+            --with-shared-modules=idmap_nss,idmap_rid,idmap_ad,idmap_adex,idmap_hash,idmap_tdb2 \
+            ac_cv_func_fstatfs=yes \
+            ac_cv_lib_crypto_EVP_MD_CTX_new=yes
 
+          # 只编译必要的组件
           make -j$(nproc) all
 
-      - name: Verify binaries
+      - name: Alternative approach if above fails
+        if: failure()
         run: |
-          echo "===== 验证二进制文件 ====="
-          cd samba-4.8.12/bin
+          echo "===== 使用备用方案: 只编译核心组件 ====="
+          cd samba-4.8.12
           
+          # 直接编译核心二进制文件，跳过复杂的配置
+          export CC="arm-linux-gnueabihf-gcc"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS -I/opt/arm-deps/include"
+          export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz"
+          
+          # 编译smbd
+          cd source3
+          ./configure \
+            --host=arm-linux-gnueabihf \
+            --prefix=/usr \
+            --enable-static \
+            --disable-shared \
+            CFLAGS="${CFLAGS}" \
+            LDFLAGS="${LDFLAGS}"
+          
+          make -j$(nproc) smbd nmbd smbpasswd
+
+      - name: Verify and collect binaries
+        run: |
+          echo "===== 验证和收集二进制文件 ====="
+          mkdir -p samba-deploy
+          
+          # 查找编译好的二进制文件
+          if [ -f "samba-4.8.12/bin/smbd" ]; then
+            cp samba-4.8.12/bin/smbd samba-4.8.12/bin/nmbd samba-4.8.12/bin/smbpasswd samba-deploy/
+          elif [ -f "samba-4.8.12/source3/bin/smbd" ]; then
+            cp samba-4.8.12/source3/bin/smbd samba-4.8.12/source3/bin/nmbd samba-4.8.12/source3/bin/smbpasswd samba-deploy/
+          else
+            echo "错误: 找不到编译好的二进制文件"
+            exit 1
+          fi
+          
+          # 验证二进制文件
+          cd samba-deploy
           echo "文件信息:"
           file smbd
           file nmbd
@@ -212,49 +158,77 @@ jobs:
           
           echo "架构检查:"
           arm-linux-gnueabihf-readelf -h smbd | grep "Machine:" | grep "ARM" || exit 1
-          
-          echo "依赖检查:"
-          arm-linux-gnueabihf-readelf -d smbd | grep "Shared library" || echo "✓ 无动态库依赖"
 
-      - name: Create deployment package
+      - name: Create minimal deployment package
         run: |
-          echo "===== 创建部署包 ====="
-          mkdir -p samba-deploy
-          cd samba-4.8.12/bin
-          
-          cp smbd nmbd smbpasswd ../../samba-deploy/
+          echo "===== 创建最小部署包 ====="
+          cd samba-deploy
           
           # 创建安装脚本
-          cat > ../../samba-deploy/install.sh << 'EOF'
+          cat > install.sh << 'EOF'
           #!/bin/sh
           echo "安装Samba for ARMv7..."
-          echo "系统: $(uname -a)"
+          echo "系统架构: $(uname -m)"
           
-          # 安装二进制文件
-          install -m 755 smbd /usr/sbin/smbd
-          install -m 755 nmbd /usr/sbin/nmbd
-          install -m 755 smbpasswd /usr/sbin/smbpasswd
+          # 检查架构是否匹配
+          if [ "$(uname -m)" != "armv7l" ] && [ "$(uname -m)" != "armv7" ]; then
+            echo "警告: 当前架构是 $(uname -m)，但二进制文件是为ARMv7编译的"
+            read -p "继续安装? (y/N) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+              exit 1
+            fi
+          fi
+          
+          # 安装文件
+          for bin in smbd nmbd smbpasswd; do
+            if [ -f "/usr/sbin/$bin" ]; then
+              mv "/usr/sbin/$bin" "/usr/sbin/${bin}.backup"
+              echo "已备份: /usr/sbin/${bin}.backup"
+            fi
+            install -m 755 "$bin" "/usr/sbin/"
+            echo "已安装: /usr/sbin/$bin"
+          done
           
           echo "安装完成!"
           echo ""
           echo "使用方法:"
-          echo "启动服务: smbd -D && nmbd -D"
-          echo "添加用户: smbpasswd -a username"
+          echo "启动文件共享: smbd -D"
+          echo "启动名称服务: nmbd -D" 
+          echo "添加用户: smbpasswd -a 用户名"
           EOF
           
-          chmod +x ../../samba-deploy/install.sh
+          chmod +x install.sh
+          
+          # 创建简单的配置文件
+          cat > smb.conf.example << 'EOF'
+          [global]
+          workgroup = WORKGROUP
+          server string = Samba Server
+          security = user
+          map to guest = Bad User
+          log file = /var/log/samba/log.%m
+          max log size = 50
+
+          [shared]
+          comment = Shared Folder
+          path = /mnt/shared
+          browseable = yes
+          writable = yes
+          guest ok = no
+          EOF
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: samba4.8-armv7-complete
+          name: samba4.8-armv7-minimal
           path: samba-deploy/*
           retention-days: 30
 
       - name: Show build success
         run: |
           echo "✅ 构建成功!"
-          echo "📦 包含: Samba 4.8.12 + Nettle + GMP + Hogweed"
+          echo "📦 包含: smbd, nmbd, smbpasswd"
           echo "🖥️  架构: ARMv7"
-          echo "🔗 链接: 完全静态"
+          echo "🔒 加密: OpenSSL + 内置算法"
           echo "⏰ 时间: $(date)"
