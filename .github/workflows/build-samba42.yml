@@ -1,29 +1,38 @@
-name: Build Samba 4 for ARMv7 (Simplified)
+name: Build Samba 4 for ARMv7 (Python 2 Compatible)
 
 on:
   workflow_dispatch:
 
 jobs:
   build-samba:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04  # 使用Ubuntu 20.04以获得Python 2支持
     timeout-minutes: 180
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install basic tools
+      - name: Install Python 2 and basic tools
         run: |
-          echo "===== 安装基础工具 ====="
+          echo "===== 安装Python 2和基础工具 ====="
           sudo apt update
           sudo apt install -y \
             build-essential \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
             wget tar xz-utils make \
-            python3 python3-dev \
+            python2 \
+            python2-dev \
             pkg-config \
             curl
+
+      - name: Set Python 2 as default
+        run: |
+          echo "===== 设置Python 2为默认版本 ====="
+          sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 1
+          sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 2
+          sudo update-alternatives --set python /usr/bin/python2
+          python --version
 
       - name: Build zlib from source
         run: |
@@ -35,7 +44,7 @@ jobs:
           cd zlib-1.2.13
           
           CC="arm-linux-gnueabihf-gcc" \
-          CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS" \
+          CFLAGS="-march=armv7-a -mfpu=neon -Os" \
           ./configure --prefix=/opt/arm-deps --static
           
           make -j$(nproc)
@@ -54,14 +63,13 @@ jobs:
           export CROSS_COMPILE="arm-linux-gnueabihf-"
           export CC="${CROSS_COMPILE}gcc"
           export AR="${CROSS_COMPILE}ar"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os"
           
           ./Configure linux-armv4 \
             --prefix=/opt/arm-deps \
             no-shared \
             no-dso \
             no-asm \
-            no-tests \
             ${CFLAGS}
           
           sed -i 's/^CC=.*/CC=$(CROSS_COMPILE)gcc/' Makefile
@@ -71,9 +79,9 @@ jobs:
           sudo make install
           cd ..
 
-      - name: Download and compile Samba 4.8 (with built-in crypto)
+      - name: Download and compile Samba 4.8 with Python 2
         run: |
-          echo "===== 下载和编译Samba (使用内置加密) ====="
+          echo "===== 下载和编译Samba (使用Python 2) ====="
           wget https://download.samba.org/pub/samba/stable/samba-4.8.12.tar.gz || \
           wget https://download.samba.org/pub/samba/old/4.8.12/samba-4.8.12.tar.gz
           
@@ -82,10 +90,10 @@ jobs:
 
           export CC="arm-linux-gnueabihf-gcc"
           export CXX="arm-linux-gnueabihf-g++"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS -I/opt/arm-deps/include"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os -I/opt/arm-deps/include"
           export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz"
 
-          # 配置Samba使用内置加密，避免复杂的GnuTLS依赖
+          # 配置Samba
           ./configure \
             --host=arm-linux-gnueabihf \
             --prefix=/usr \
@@ -103,36 +111,47 @@ jobs:
             --without-ads \
             --without-pam \
             --without-gnutls \
-            --with-builtin-libraries=md5,des,sha256,sha512,arc4 \
-            --with-shared-modules=idmap_nss,idmap_rid,idmap_ad,idmap_adex,idmap_hash,idmap_tdb2 \
-            ac_cv_func_fstatfs=yes \
-            ac_cv_lib_crypto_EVP_MD_CTX_new=yes
+            ac_cv_func_fstatfs=yes
 
-          # 只编译必要的组件
+          # 编译
           make -j$(nproc) all
 
-      - name: Alternative approach if above fails
+      - name: Alternative approach if Python 2 still fails
         if: failure()
         run: |
-          echo "===== 使用备用方案: 只编译核心组件 ====="
-          cd samba-4.8.12
+          echo "===== 使用更新的Samba版本 ====="
+          # 下载更新的Samba版本（支持Python 3）
+          wget https://download.samba.org/pub/samba/stable/samba-4.13.0.tar.gz || \
+          wget https://download.samba.org/pub/samba/old/4.13.0/samba-4.13.0.tar.gz
           
-          # 直接编译核心二进制文件，跳过复杂的配置
+          tar -xzf samba-4.13.0.tar.gz
+          cd samba-4.13.0
+
+          # 切换回Python 3
+          sudo update-alternatives --set python /usr/bin/python3
+          python --version
+
           export CC="arm-linux-gnueabihf-gcc"
-          export CFLAGS="-march=armv7-a -mfpu=neon -Os -U_TIME_BITS -U_FILE_OFFSET_BITS -I/opt/arm-deps/include"
+          export CXX="arm-linux-gnueabihf-g++"
+          export CFLAGS="-march=armv7-a -mfpu=neon -Os -I/opt/arm-deps/include"
           export LDFLAGS="-L/opt/arm-deps/lib -static -lssl -lcrypto -lz"
-          
-          # 编译smbd
-          cd source3
+
           ./configure \
             --host=arm-linux-gnueabihf \
             --prefix=/usr \
+            --sysconfdir=/etc/samba \
+            --localstatedir=/var \
+            --disable-python \
+            --without-ldap \
+            --without-ad-dc \
+            --without-systemd \
+            --without-winbind \
+            --with-zlib=/opt/arm-deps \
             --enable-static \
             --disable-shared \
-            CFLAGS="${CFLAGS}" \
-            LDFLAGS="${LDFLAGS}"
-          
-          make -j$(nproc) smbd nmbd smbpasswd
+            --without-gnutls
+
+          make -j$(nproc) all
 
       - name: Verify and collect binaries
         run: |
@@ -142,8 +161,8 @@ jobs:
           # 查找编译好的二进制文件
           if [ -f "samba-4.8.12/bin/smbd" ]; then
             cp samba-4.8.12/bin/smbd samba-4.8.12/bin/nmbd samba-4.8.12/bin/smbpasswd samba-deploy/
-          elif [ -f "samba-4.8.12/source3/bin/smbd" ]; then
-            cp samba-4.8.12/source3/bin/smbd samba-4.8.12/source3/bin/nmbd samba-4.8.12/source3/bin/smbpasswd samba-deploy/
+          elif [ -f "samba-4.13.0/bin/smbd" ]; then
+            cp samba-4.13.0/bin/smbd samba-4.13.0/bin/nmbd samba-4.13.0/bin/smbpasswd samba-deploy/
           else
             echo "错误: 找不到编译好的二进制文件"
             exit 1
@@ -159,28 +178,18 @@ jobs:
           echo "架构检查:"
           arm-linux-gnueabihf-readelf -h smbd | grep "Machine:" | grep "ARM" || exit 1
 
-      - name: Create minimal deployment package
+      - name: Create deployment package
         run: |
-          echo "===== 创建最小部署包 ====="
+          echo "===== 创建部署包 ====="
           cd samba-deploy
           
           # 创建安装脚本
           cat > install.sh << 'EOF'
           #!/bin/sh
           echo "安装Samba for ARMv7..."
-          echo "系统架构: $(uname -m)"
+          echo "系统信息: $(uname -a)"
           
-          # 检查架构是否匹配
-          if [ "$(uname -m)" != "armv7l" ] && [ "$(uname -m)" != "armv7" ]; then
-            echo "警告: 当前架构是 $(uname -m)，但二进制文件是为ARMv7编译的"
-            read -p "继续安装? (y/N) " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-              exit 1
-            fi
-          fi
-          
-          # 安装文件
+          # 安装二进制文件
           for bin in smbd nmbd smbpasswd; do
             if [ -f "/usr/sbin/$bin" ]; then
               mv "/usr/sbin/$bin" "/usr/sbin/${bin}.backup"
@@ -193,42 +202,23 @@ jobs:
           echo "安装完成!"
           echo ""
           echo "使用方法:"
-          echo "启动文件共享: smbd -D"
-          echo "启动名称服务: nmbd -D" 
-          echo "添加用户: smbpasswd -a 用户名"
+          echo "启动服务: smbd -D && nmbd -D"
+          echo "添加用户: smbpasswd -a username"
           EOF
           
           chmod +x install.sh
-          
-          # 创建简单的配置文件
-          cat > smb.conf.example << 'EOF'
-          [global]
-          workgroup = WORKGROUP
-          server string = Samba Server
-          security = user
-          map to guest = Bad User
-          log file = /var/log/samba/log.%m
-          max log size = 50
-
-          [shared]
-          comment = Shared Folder
-          path = /mnt/shared
-          browseable = yes
-          writable = yes
-          guest ok = no
-          EOF
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: samba4.8-armv7-minimal
+          name: samba-armv7-binaries
           path: samba-deploy/*
           retention-days: 30
 
       - name: Show build success
         run: |
           echo "✅ 构建成功!"
-          echo "📦 包含: smbd, nmbd, smbpasswd"
+          echo "📦 二进制文件已上传到Artifacts"
           echo "🖥️  架构: ARMv7"
-          echo "🔒 加密: OpenSSL + 内置算法"
+          echo "🐍 Python: 兼容版本"
           echo "⏰ 时间: $(date)"
