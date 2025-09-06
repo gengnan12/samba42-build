@@ -1,85 +1,168 @@
-name: Build Samba 4.2 for ARMv5
+name: Build Samba 4 for ARMv7 (Legacy GLIBC)
+
 on:
-  push:
-    branches: [ main ]  # 推送代码时触发
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-20.04  # 编译环境
+  build-samba:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    
     steps:
-      # 步骤 1：拉取仓库代码
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 步骤 2：安装依赖工具
-      - name: Install dependencies
+      - name: Setup environment
         run: |
+          echo "===== 设置编译环境 ====="
           sudo apt update
-          sudo apt install -y build-essential flex bison python2 python3 \
-                              libssl-dev libacl1-dev libattr1-dev wget tar gzip
+          sudo apt install -y \
+            build-essential \
+            crossbuild-essential-armhf \
+            gcc-arm-linux-gnueabihf \
+            g++-arm-linux-gnueabihf \
+            pkg-config \
+            wget tar xz-utils make \
+            python3 python3-dev \
+            libssl-dev:armhf \
+            zlib1g-dev:armhf
 
-      # 步骤 3：下载 ARMv5 交叉编译工具链（以 OpenWrt 工具链为例）
-      - name: Download ARMv5 toolchain
+      - name: Check ARM toolchain
         run: |
-          # 下载 OpenWrt 适配 ARMv5 的 uClibc 工具链
-          wget https://archive.openwrt.org/chaos_calmer/15.05.1/ar71xx/generic/OpenWrt-Toolchain-ar71xx-for-mips_24kec+dsp-gcc-4.8-linaro_uClibc-0.9.33.2.tar.bz2
-          # 解压到 /opt 目录
-          sudo tar -xjf OpenWrt-Toolchain-ar71xx-for-mips_24kec+dsp-gcc-4.8-linaro_uClibc-0.9.33.2.tar.bz2 -C /opt/
-          # 添加工具链路径到环境变量
-          echo "/opt/OpenWrt-Toolchain-ar71xx-for-mips_24kec+dsp-gcc-4.8-linaro_uClibc-0.9.33.2/bin" >> $GITHUB_PATH
+          echo "===== 检查ARM工具链 ====="
+          arm-linux-gnueabihf-gcc --version
+          arm-linux-gnueabihf-gcc -dumpmachine
 
-      # 步骤 4：验证工具链
-      - name: Verify toolchain
+      - name: Build compatible GnuTLS (older version)
         run: |
-          # 工具链前缀（根据实际解压后的编译器名称修改）
-          mipsel-openwrt-linux-uclibc-gcc -v
+          echo "===== 编译兼容的GnuTLS 3.6.x ====="
+          # 使用更旧的GnuTLS版本以兼容您的系统glibc
+          GNUTLS_VERSION="3.6.16"
+          wget -q --show-progress "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.6/gnutls-${GNUTLS_VERSION}.tar.xz"
+          tar -xJf gnutls-${GNUTLS_VERSION}.tar.xz
+          cd gnutls-${GNUTLS_VERSION}
 
-      # 步骤 5：下载 Samba 4.2 源码（4.2.14 为最后一个稳定版）
-      - name: Download Samba 4.2 source
-        run: |
-          wget https://download.samba.org/pub/samba/stable/samba-4.2.14.tar.gz
-          tar -xzf samba-4.2.14.tar.gz
-          cd samba-4.2.14
-
-      # 步骤 6：配置编译参数（关键：适配 ARMv5 和嵌入式环境）
-      - name: Configure Samba 4.2
-        run: |
-          cd samba-4.2.14
           ./configure \
-            --host=mipsel-openwrt-linux-uclibc \  # 工具链前缀
-            --prefix=/tmp/samba42-output \        # 输出目录
-            --enable-static \                     # 静态编译（减少依赖）
-            --disable-shared \
-            --with-uclibc \                       # 适配 uClibc 系统
-            --without-ldap \                      # 禁用 LDAP（非必需）
-            --without-ad-dc \                     # 禁用 AD 域控制器功能
-            --without-pam \                       # 禁用 PAM 认证
-            --disable-cups \                      # 禁用打印机支持
+            --host=arm-linux-gnueabihf \
+            --prefix=/opt/arm-gnutls \
+            --disable-doc \
+            --disable-tests \
+            --enable-shared \
+            --without-p11-kit \
+            --with-included-libtasn1 \
+            --with-included-unistring \
+            CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os -U_FORTIFY_SOURCE" \
+            LDFLAGS="-static-libgcc -Wl,-z,relro,-z,now"
+
+          make -j$(nproc)
+          sudo make install
+
+      - name: Download Samba 4.9 (compatible version)
+        run: |
+          echo "===== 下载兼容的Samba 4.9版本 ====="
+          # 使用较旧的Samba版本以确保兼容性
+          SAMBA_VERSION="4.9.5"
+          wget -q --show-progress "https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz"
+          tar -xzf samba-${SAMBA_VERSION}.tar.gz
+          cd samba-${SAMBA_VERSION}
+
+      - name: Configure Samba for legacy system
+        run: |
+          echo "===== 配置Samba用于旧系统 ====="
+          SAMBA_VERSION="4.9.5"
+          cd samba-${SAMBA_VERSION}
+
+          export PKG_CONFIG_PATH="/opt/arm-gnutls/lib/pkgconfig"
+          export CC="arm-linux-gnueabihf-gcc"
+          export CXX="arm-linux-gnueabihf-g++"
+          export CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=hard -Os -U_FORTIFY_SOURCE -D_GNU_SOURCE"
+          export LDFLAGS="-L/opt/arm-gnutls/lib -Wl,-rpath,/opt/arm-gnutls/lib -static-libgcc"
+
+          ./configure \
+            --host=arm-linux-gnueabihf \
+            --target=arm-linux-gnueabihf \
+            --prefix=/usr \
+            --sysconfdir=/etc/samba \
+            --localstatedir=/var \
+            --with-privatedir=/var/lib/samba/private \
+            --disable-python \
+            --without-ldap \
+            --without-ad-dc \
+            --without-systemd \
+            --without-winbind \
+            --with-gnutls=/opt/arm-gnutls \
+            --enable-shared-libs \
+            --disable-rpath \
+            --disable-avahi \
             --disable-iprint \
-            CFLAGS="-march=armv5te -Os" \         # ARMv5 架构优化
-            LDFLAGS="-static"                     # 静态链接
+            --disable-cups \
+            --disable-glusterfs \
+            --disable-json \
+            --disable-libarchive \
+            ac_cv_func_fstatfs=yes
 
-      # 步骤 7：编译 Samba 4.2（核心组件：smbd、nmbd）
-      - name: Compile Samba 4.2
+      - name: Compile Samba
         run: |
-          cd samba-4.2.14
-          make -j4  # 多线程编译（约 15-30 分钟）
+          echo "===== 编译Samba ====="
+          SAMBA_VERSION="4.9.5"
+          cd samba-${SAMBA_VERSION}
+          make -j$(nproc) all
 
-      # 步骤 8：验证编译产物
-      - name: Check compiled binaries
+      - name: Check binary compatibility
         run: |
-          cd samba-4.2.14/bin
-          file smbd  # 应显示 ARMv5 架构信息
-          file nmbd
+          echo "===== 检查二进制兼容性 ====="
+          SAMBA_VERSION="4.9.5"
+          cd samba-${SAMBA_VERSION}/bin
+          
+          # 检查架构
+          arm-linux-gnueabihf-readelf -h smbd | grep "Machine:" | grep "ARM" || exit 1
+          
+          # 检查动态库依赖
+          echo "动态库依赖:"
+          arm-linux-gnueabihf-readelf -d smbd | grep "Shared library"
+          
+          # 检查GLIBC版本要求
+          echo "GLIBC版本要求:"
+          arm-linux-gnueabihf-objdump -p smbd | grep -A10 "Version References" | grep GLIBC || echo "无GLIBC版本要求"
 
-      # 步骤 9：上传产物（可下载到本地）
+      - name: Create minimal installation package
+        run: |
+          echo "===== 创建最小安装包 ====="
+          SAMBA_VERSION="4.9.5"
+          mkdir -p samba-armv7-package
+          cd samba-${SAMBA_VERSION}
+          
+          # 复制必要的二进制文件
+          cp bin/smbd bin/nmbd bin/smbpasswd ../samba-armv7-package/
+          
+          # 复制配置文件示例
+          mkdir -p ../samba-armv7-package/config
+          cp examples/smb.conf.default ../samba-armv7-package/config/smb.conf.example
+          
+          # 创建安装脚本
+          cat > ../samba-armv7-package/install.sh << 'EOF'
+          #!/bin/sh
+          echo "Installing Samba for ARMv7..."
+          cp smbd nmbd smbpasswd /usr/sbin/
+          chmod 755 /usr/sbin/smbd /usr/sbin/nmbd /usr/sbin/smbpasswd
+          echo "Installation complete!"
+          EOF
+          
+          chmod +x ../samba-armv7-package/install.sh
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: samba42-armv5-binaries
+          name: samba4.9-armv7-legacy
           path: |
-            samba-4.2.14/bin/smbd
-            samba-4.2.14/bin/nmbd
-            samba-4.2.14/bin/samba-tool  # 可选工具
-          retention-days: 30  # 保留 30 天
+            samba-armv7-package/*
+          retention-days: 30
+
+      - name: Show build info
+        run: |
+          echo "===== 构建信息 ====="
+          echo "目标系统: ARMv7 (glibc 2.1x compatible)"
+          echo "Samba版本: 4.9.5"
+          echo "GnuTLS版本: 3.6.16"
+          echo "构建时间: $(date)"
+          echo "适用于: Linux 4.1.x (Buildroot 2017)"
