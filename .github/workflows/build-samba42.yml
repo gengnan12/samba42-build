@@ -39,15 +39,36 @@ jobs:
       run: |
         wget https://download.samba.org/pub/samba/stable/samba-$SAMBA_VERSION.tar.gz
         tar -xzf samba-$SAMBA_VERSION.tar.gz
-        cd samba-$SAMBA_VERSION
+        echo "SAMBA_SOURCE_DIR=samba-$SAMBA_VERSION" >> $GITHUB_ENV
 
     - name: Configure Samba for ARMv5
       run: |
-        cd samba-$SAMBA_VERSION
-        CC=arm-linux-gnueabi-gcc ./configure \
+        cd $SAMBA_SOURCE_DIR
+
+        # 创建交叉编译答案文件
+        cat > cross-answers.txt << 'EOF'
+        Checking simple C program: yes
+        Checking for large file support: yes
+        Checking for -D_FILE_OFFSET_BITS=64: yes
+        Checking for WORDS_BIGENDIAN: no
+        Checking for C99 vsnprintf: yes
+        Checking for HAVE_SECURE_MKSTEMP: yes
+        rpath library support: yes
+        Checking for _LARGEFILE64_SOURCE: yes
+        Checking for CC support of -D_FORTIFY_SOURCE=2: yes
+        Checking for _FILE_OFFSET_BITS=64: yes
+        EOF
+
+        # 设置交叉编译环境和答案文件路径
+        export cross_answers=$(pwd)/cross-answers.txt
+        export CC=arm-linux-gnueabi-gcc
+        export AR=arm-linux-gnueabi-ar
+        export RANLIB=arm-linux-gnueabi-ranlib
+
+        # 运行 configure 命令
+        ./configure \
           --prefix=/usr \
           --host=arm-linux-gnueabi \
-          --enable-cross-answers=yes \
           --disable-avahi \
           --disable-cups \
           --disable-pie \
@@ -55,32 +76,64 @@ jobs:
           --without-ldap \
           --without-ads \
           --without-systemd \
-          --with-shared-modules=!vfs_snapper
-
-        # 注意：这是一个最小化配置，移除了很多大型依赖。
-        # 你可以根据你的设备需求，使用 `./configure --help` 查看选项来增删模块。
+          --with-shared-modules=!vfs_snapper \
+          --cross-compile \
+          --cross-answers=cross-answers.txt
 
     - name: Build Samba (This will take a while...)
       run: |
-        cd samba-$SAMBA_VERSION
+        cd $SAMBA_SOURCE_DIR
         make -j$(nproc) # 使用所有可用的CPU核心进行编译
+
+    - name: Install to staging directory
+      run: |
+        cd $SAMBA_SOURCE_DIR
+        mkdir -p ../staging
+        make install DESTDIR=$(pwd)/../staging
 
     - name: Package the binaries
       run: |
-        mkdir -p samba-armv5-binaries/bin
-        mkdir -p samba-armv5-binaries/sbin
-        mkdir -p samba-armv5-binaries/lib
-        # 复制关键二进制文件和库
-        cp samba-$SAMBA_VERSION/bin/* samba-armv5-binaries/bin/ || true
-        cp samba-$SAMBA_VERSION/sbin/* samba-armv5-binaries/sbin/ || true
-        # 使用 find 命令查找并复制 .so 文件，可能需要根据你的需求调整
-        find samba-$SAMBA_VERSION/bin -name "*.so" -exec cp {} samba-armv5-binaries/lib/ \; || true
+        mkdir -p samba-armv5-binaries
+        # 复制所有安装的文件
+        cp -r $SAMBA_SOURCE_DIR/../staging/usr/* samba-armv5-binaries/
         # 创建一个简单的版本信息文件
-        echo "Samba $SAMBA_VERSION built for ARMv5 on $(date)" > samba-armv5-binaries/INFO.txt
+        echo "Samba $SAMBA_VERSION built for ARMv5 on $(date)" > samba-armv5-binaries/BUILD_INFO.txt
+        echo "Toolchain: gcc-arm-linux-gnueabi" >> samba-armv5-binaries/BUILD_INFO.txt
+        echo "Configure options: --host=arm-linux-gnueabi --cross-compile" >> samba-armv5-binaries/BUILD_INFO.txt
+        
+        # 创建打包脚本
+        cat > samba-armv5-binaries/install.sh << 'EOF'
+        #!/bin/sh
+        # Simple install script for Samba ARMv5 binaries
+        echo "Installing Samba ARMv5 binaries to /usr/local/samba-armv5"
+        INSTALL_DIR=/usr/local/samba-armv5
+        mkdir -p $INSTALL_DIR
+        cp -r bin $INSTALL_DIR/
+        cp -r sbin $INSTALL_DIR/
+        cp -r lib $INSTALL_DIR/
+        echo "Installation complete. Binaries are in $INSTALL_DIR/bin"
+        echo "You may need to add $INSTALL_DIR/bin to your PATH"
+        EOF
+        
+        chmod +x samba-armv5-binaries/install.sh
+
+    - name: Create final archive
+      run: |
+        tar -czf samba-armv5-$SAMBA_VERSION.tar.gz samba-armv5-binaries/
+        ls -la *.tar.gz
 
     - name: Upload binaries as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: samba-armv5-binaries
-        path: samba-armv5-binaries/
-        retention-days: 5
+        name: samba-armv5-$SAMBA_VERSION
+        path: |
+          samba-armv5-$SAMBA_VERSION.tar.gz
+          samba-armv5-binaries/
+        retention-days: 7
+
+    - name: Show build summary
+      run: |
+        echo "=== Samba ARMv5 Build Complete ==="
+        echo "Version: $SAMBA_VERSION"
+        echo "Archive: samba-armv5-$SAMBA_VERSION.tar.gz"
+        echo "Artifact will be available for download from the Actions tab"
