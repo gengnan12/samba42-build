@@ -68,7 +68,7 @@ jobs:
 
         echo "Using CFLAGS: $CFLAGS"
 
-        # 运行配置命令 - 使用单行格式避免多行问题
+        # 运行配置命令
         CC="arm-linux-gnueabi-gcc" CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" ./configure --prefix=/usr --host=arm-linux-gnueabi --enable-cross-answers=cross-answers.txt --disable-avahi --disable-cups --disable-pie --disable-debug --without-python --without-ads --without-ldap --without-systemd --enable-smb-server --cross-compile --cross-answers=yes
 
         # 如果配置失败，尝试简化配置
@@ -85,74 +85,63 @@ jobs:
         cd $SAMBA_SOURCE_DIR
         echo "Building server components..."
         
-        # 尝试构建核心组件
+        # 构建核心服务器组件
         if [ -f "Makefile" ]; then
             make -j$(nproc) bin/smbd bin/nmbd bin/smbpasswd || make -j1 bin/smbd bin/nmbd bin/smbpasswd
         else
             echo "No Makefile found"
+            exit 1
         fi
         
         echo "Build completed"
-        ls -la bin/smbd bin/nmbd bin/smbpasswd 2>/dev/null || echo "No binaries found"
+        ls -la bin/smbd bin/nmbd bin/smbpasswd
 
-    - name: Create server package
+    - name: Create binary package
       run: |
-        mkdir -p samba-server-armv5/bin
+        # 创建打包目录
+        mkdir -p samba-server-armv5
         
-        # 复制二进制文件
-        if [ -f "$SAMBA_SOURCE_DIR/bin/smbd" ]; then
-            cp $SAMBA_SOURCE_DIR/bin/smbd samba-server-armv5/bin/
-            echo "✓ smbd copied"
-        fi
-        
-        if [ -f "$SAMBA_SOURCE_DIR/bin/nmbd" ]; then
-            cp $SAMBA_SOURCE_DIR/bin/nmbd samba-server-armv5/bin/
-            echo "✓ nmbd copied"
-        fi
-        
-        if [ -f "$SAMBA_SOURCE_DIR/bin/smbpasswd" ]; then
-            cp $SAMBA_SOURCE_DIR/bin/smbpasswd samba-server-armv5/bin/
-            echo "✓ smbpasswd copied"
-        fi
+        # 只复制核心二进制文件
+        echo "Copying core binaries..."
+        cp $SAMBA_SOURCE_DIR/bin/smbd samba-server-armv5/
+        cp $SAMBA_SOURCE_DIR/bin/nmbd samba-server-armv5/
+        cp $SAMBA_SOURCE_DIR/bin/smbpasswd samba-server-armv5/
         
         # 检查文件架构
         echo "Binary architecture:"
-        for bin in samba-server-armv5/bin/*; do
-            if [ -f "$bin" ]; then
-                echo "$(basename $bin): $(file $bin)"
-            fi
-        done
-
-        
-Usage:
-./smbd -D -s smb.conf
-./nmbd -D -s smb.conf
-EOF
+        file samba-server-armv5/smbd
+        file samba-server-armv5/nmbd
+        file samba-server-armv5/smbpasswd
 
     - name: Create final archive
       run: |
-        if [ -d "samba-server-armv5/bin" ] && [ -n "$(ls samba-server-armv5/bin/ 2>/dev/null)" ]; then
-            tar -czf samba-server-armv5-$SAMBA_VERSION.tar.gz samba-server-armv5/
-            echo "Package created successfully"
-        else
-            echo "No binaries found"
-            exit 1
-        fi
+        # 创建压缩包
+        tar -czf samba-server-armv5-$SAMBA_VERSION.tar.gz samba-server-armv5/
+        
+        # 显示包内容
+        echo "Package contents:"
+        tar -tzf samba-server-armv5-$SAMBA_VERSION.tar.gz
+        
+        echo "Package created: samba-server-armv5-$SAMBA_VERSION.tar.gz"
+        echo "Size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
 
-    - name: Upload server package
+    - name: Upload binary package
       uses: actions/upload-artifact@v4
       with:
-        name: samba-server-armv5
+        name: samba-server-armv5-binaries
         path: samba-server-armv5-$SAMBA_VERSION.tar.gz
         retention-days: 7
 
     - name: Show build summary
       run: |
-        echo "Build Summary"
+        echo "=== Build Summary ==="
         echo "Version: $SAMBA_VERSION"
+        echo "Package: samba-server-armv5-$SAMBA_VERSION.tar.gz"
+        echo "Binaries included: smbd, nmbd, smbpasswd"
+        echo "Target architecture: ARMv5"
         if [ -f "samba-server-armv5-$SAMBA_VERSION.tar.gz" ]; then
-            echo "Package: samba-server-armv5-$SAMBA_VERSION.tar.gz"
-            echo "Size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
+            echo "Package size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
         else
             echo "Build failed - no package created"
+            exit 1
         fi
