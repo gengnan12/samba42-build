@@ -1,14 +1,12 @@
-name: Build Samba for ARMv5
+name: Build Samba Server for ARMv5
 
 on:
   workflow_dispatch: # 允许手动触发工作流
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 env:
-  SAMBA_VERSION: "4.19.3" # 建议使用最新的稳定版，请从 samba.org 获取
+  SAMBA_VERSION: "4.19.3" # 使用最新的稳定版
 
 jobs:
   build:
@@ -23,12 +21,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
-          git \
           wget \
           pkg-config \
           python3 \
-          python3-markdown \
-          python3-dnspython \
           libacl1-dev \
           libattr1-dev \
           libblkid-dev \
@@ -43,7 +38,7 @@ jobs:
         tar -xzf samba-$SAMBA_VERSION.tar.gz
         echo "SAMBA_SOURCE_DIR=samba-$SAMBA_VERSION" >> $GITHUB_ENV
 
-    - name: Configure Samba for ARMv5
+    - name: Configure Samba for ARMv5 (Server only)
       run: |
         cd $SAMBA_SOURCE_DIR
 
@@ -52,127 +47,211 @@ jobs:
         Checking simple C program: yes
         Checking for large file support: yes
         Checking for -D_FILE_OFFSET_BITS=64: yes
+        Checking for -D_LARGE_FILES: yes
         Checking for WORDS_BIGENDIAN: no
         Checking for C99 vsnprintf: yes
         Checking for HAVE_SECURE_MKSTEMP: yes
         rpath library support: yes
         Checking for _LARGEFILE64_SOURCE: yes
-        Checking for CC support of -D_FORTIFY_SOURCE=2: yes
         Checking for _FILE_OFFSET_BITS=64: yes
-        Checking for working strptime: yes
-        Checking for SHPROCESSOR_PPC: no
-        Checking for getauthuid: no
+        Checking getconf LFS_CFLAGS: -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
+        Checking for large file support without additional flags: no
+        sizeof(off_t): 8
         EOF
 
-        # 设置交叉编译环境和答案文件路径
+        # 设置交叉编译环境
         export cross_answers=$(pwd)/cross-answers.txt
         export CC="arm-linux-gnueabi-gcc"
         export AR="arm-linux-gnueabi-ar"
-        export RANLIB="arm-linux-gnueabi-ranlib"
-        export CFLAGS="-Os -static-libgcc"  # 添加静态链接和一些优化标志
+        
+        # 设置大文件支持标志
+        export CFLAGS="-D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -Os"
+        export CPPFLAGS="-D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64"
 
-        # 运行 configure 命令 - 移除了无效的 --disable-pie 选项
+        # 仅配置服务器核心功能
         ./configure \
           --prefix=/usr \
           --host=arm-linux-gnueabi \
-          --disable-avahi \
-          --disable-cups \
-          --without-ad-dc \
-          --without-ldap \
-          --without-ads \
-          --without-systemd \
-          --without-json \
-          --without-libarchive \
-          --with-shared-modules=!vfs_snapper \
           --cross-compile \
           --cross-answers=cross-answers.txt \
-          --disable-python
+          \
+          # 禁用所有不需要的功能
+          --disable-avahi \
+          --disable-cups \
+          --disable-iprint \
+          --disable-fam \
+          --disable-pie \
+          --disable-relro \
+          --disable-static \
+          --disable-swat \
+          --disable-shared-libs \
+          --disable-debug \
+          --disable-developer \
+          \
+          # 仅启用服务器核心
+          --enable-shared \
+          --enable-smb-server \
+          \
+          # 移除不必要的模块和依赖
+          --without-acl-support \
+          --without-ads \
+          --without-ad-dc \
+          --without-ldap \
+          --without-pam \
+          --without-systemd \
+          --without-utmp \
+          --without-winbind \
+          --without-libarchive \
+          --without-json \
+          --without-ads \
+          --without-dmapi \
+          --without-gpgme \
+          --without-regedit \
+          --without-iconv \
+          --without-python \
+          --without-readline \
+          \
+          # 仅包含必要的共享模块
+          --with-shared-modules=idmap_nss,idmap_tdb2,pdb_tdbsam,pdb_smbpasswd,auth_unix,auth_winbind
 
-        # 显示配置摘要
-        echo "=== Configuration Summary ==="
-        grep "^.*=" bin/config.status | head -20
+        echo "=== Server-only configuration complete ==="
 
-    - name: Build Samba (This will take a while...)
+    - name: Build only server components
       run: |
         cd $SAMBA_SOURCE_DIR
-        make -j$(nproc) # 使用所有可用的CPU核心进行编译
+        echo "Building only server components..."
+        
+        # 仅构建服务器相关的目标
+        make -j$(nproc) bin/smbd bin/nmbd bin/smbpasswd
+        
+        echo "=== Build completed ==="
+        echo "Generated binaries:"
+        file bin/smbd 2>/dev/null || echo "smbd not found"
+        file bin/nmbd 2>/dev/null || echo "nmbd not found"
+        file bin/smbpasswd 2>/dev/null || echo "smbpasswd not found"
 
-        # 检查生成的关键二进制文件
-        echo "=== Built binaries ==="
-        file bin/smbd || true
-        file bin/nmbd || true
-        file bin/smbclient || true
-
-    - name: Install to staging directory
+    - name: Create minimal server package
       run: |
-        cd $SAMBA_SOURCE_DIR
-        mkdir -p ../staging
-        make install DESTDIR=$(pwd)/../staging
-
-    - name: Package the binaries
-      run: |
-        mkdir -p samba-armv5-binaries
+        mkdir -p samba-server-armv5/bin
+        mkdir -p samba-server-armv5/lib
+        mkdir -p samba-server-armv5/etc
         
-        # 复制关键文件
-        cp -r $SAMBA_SOURCE_DIR/../staging/usr/* samba-armv5-binaries/
+        # 复制核心服务器二进制文件
+        cp $SAMBA_SOURCE_DIR/bin/smbd samba-server-armv5/bin/ 2>/dev/null || true
+        cp $SAMBA_SOURCE_DIR/bin/nmbd samba-server-armv5/bin/ 2>/dev/null || true
+        cp $SAMBA_SOURCE_DIR/bin/smbpasswd samba-server-armv5/bin/ 2>/dev/null || true
         
-        # 检查文件架构
-        echo "=== Checking binary architectures ==="
-        find samba-armv5-binaries -type f -executable -exec sh -c 'file "$1" | grep -E "ELF|ARM"' sh {} \;
+        # 复制必要的库文件（如果有）
+        find $SAMBA_SOURCE_DIR/bin -name "*.so" -exec cp {} samba-server-armv5/lib/ \; 2>/dev/null || true
         
-        # 创建构建信息
-        echo "Samba $SAMBA_VERSION built for ARMv5 on $(date)" > samba-armv5-binaries/BUILD_INFO.txt
-        echo "Toolchain: gcc-arm-linux-gnueabi" >> samba-armv5-binaries/BUILD_INFO.txt
-        echo "Build system: GitHub Actions Ubuntu 22.04" >> samba-armv5-binaries/BUILD_INFO.txt
-        echo "Configure options: --host=arm-linux-gnueabi --cross-compile" >> samba-armv5-binaries/BUILD_INFO.txt
+        # 创建默认配置文件
+        cat > samba-server-armv5/etc/smb.conf << 'EOF'
+        [global]
+        workgroup = WORKGROUP
+        server string = Samba Server
+        netbios name = ARM-SERVER
+        security = user
+        map to guest = Bad User
         
-        # 创建简单的部署说明
-        cat > samba-armv5-binaries/README.txt << 'EOF'
-        Samba ARMv5 Binary Distribution
-        
-        1. Copy the bin/, sbin/, lib/ directories to your ARMv5 device
-        2. Ensure the device has required libraries (libacl, libattr, libgnutls, etc.)
-        3. Alternatively, use static linking by adding CFLAGS="-static" in build
-        
-        Key binaries:
-        - bin/smbd: SMB daemon
-        - bin/nmbd: NetBIOS name server
-        - bin/smbclient: SMB client
-        - bin/smbpasswd: Password utility
-        
-        Note: You may need to set LD_LIBRARY_PATH if libraries are in non-standard locations
+        [shared]
+        path = /tmp
+        browseable = yes
+        read only = no
+        guest ok = yes
         EOF
+        
+        # 创建安装和启动脚本
+        cat > samba-server-armv5/install.sh << 'EOF'
+        #!/bin/sh
+        echo "Installing Samba Server for ARMv5..."
+        
+        # 创建安装目录
+        INSTALL_DIR=/opt/samba-server
+        mkdir -p $INSTALL_DIR
+        
+        # 复制文件
+        cp -r bin $INSTALL_DIR/
+        cp -r lib $INSTALL_DIR/ 2>/dev/null || true
+        cp -r etc $INSTALL_DIR/
+        
+        # 创建启动脚本
+        cat > /etc/init.d/samba-server << 'EOS'
+        #!/bin/sh
+        SAMBA_DIR=/opt/samba-server
+        
+        case "$1" in
+          start)
+            echo "Starting Samba Server..."
+            $SAMBA_DIR/bin/nmbd -D -s $SAMBA_DIR/etc/smb.conf
+            $SAMBA_DIR/bin/smbd -D -s $SAMBA_DIR/etc/smb.conf
+            ;;
+          stop)
+            echo "Stopping Samba Server..."
+            killall smbd nmbd
+            ;;
+          *)
+            echo "Usage: $0 {start|stop}"
+            exit 1
+            ;;
+        esac
+        EOS
+        
+        chmod +x /etc/init.d/samba-server
+        
+        echo "Installation complete!"
+        echo "Start server: /etc/init.d/samba-server start"
+        echo "Edit configuration: $INSTALL_DIR/etc/smb.conf"
+        EOF
+        
+        chmod +x samba-server-armv5/install.sh
+        
+        # 创建使用说明
+        cat > samba-server-armv5/README.txt << 'EOF'
+        Samba Server for ARMv5 - Minimal Edition
+        ========================================
+        
+        This package contains only the Samba server components:
+        - smbd: SMB/CIFS file sharing daemon
+        - nmbd: NetBIOS name service daemon  
+        - smbpasswd: User password management
+        
+        Installation:
+        1. Extract this archive on your ARMv5 device
+        2. Run: ./install.sh
+        3. Edit /opt/samba-server/etc/smb.conf as needed
+        4. Start: /etc/init.d/samba-server start
+        
+        Requirements:
+        - Linux ARMv5 device
+        - Basic libraries: libc, libdl, libpthread
+        
+        Note: This is a minimal build for embedded devices.
+        EOF
+        
+        # 创建版本信息
+        echo "Samba Server $SAMBA_VERSION" > samba-server-armv5/VERSION
+        echo "Build date: $(date)" >> samba-server-armv5/VERSION
+        echo "Architecture: ARMv5" >> samba-server-armv5/VERSION
 
-    - name: Create minimal distribution package
+    - name: Create final archive
       run: |
-        # 创建只包含关键二进制文件的精简包
-        mkdir -p samba-minimal/bin
-        mkdir -p samba-minimal/sbin
-        
-        # 复制最重要的二进制文件
-        cp $SAMBA_SOURCE_DIR/bin/smbd samba-minimal/bin/ || true
-        cp $SAMBA_SOURCE_DIR/bin/nmbd samba-minimal/bin/ || true
-        cp $SAMBA_SOURCE_DIR/bin/smbclient samba-minimal/bin/ || true
-        cp $SAMBA_SOURCE_DIR/bin/smbpasswd samba-minimal/bin/ || true
-        cp $SAMBA_SOURCE_DIR/bin/testparm samba-minimal/bin/ || true
-        
-        # 创建打包文件
-        tar -czf samba-armv5-minimal-$SAMBA_VERSION.tar.gz samba-minimal/
-        tar -czf samba-armv5-full-$SAMBA_VERSION.tar.gz samba-armv5-binaries/
+        tar -czf samba-server-armv5-$SAMBA_VERSION.tar.gz samba-server-armv5/
+        echo "Package created: samba-server-armv5-$SAMBA_VERSION.tar.gz"
+        echo "Contents:"
+        tar -tzf samba-server-armv5-$SAMBA_VERSION.tar.gz
 
-    - name: Upload binaries as artifact
+    - name: Upload server package
       uses: actions/upload-artifact@v4
       with:
-        name: samba-armv5-$SAMBA_VERSION
-        path: |
-          samba-armv5-minimal-$SAMBA_VERSION.tar.gz
-          samba-armv5-full-$SAMBA_VERSION.tar.gz
+        name: samba-server-armv5
+        path: samba-server-armv5-$SAMBA_VERSION.tar.gz
         retention-days: 7
 
     - name: Show build summary
       run: |
-        echo "=== Samba ARMv5 Build Complete ==="
+        echo "=== Samba Server Build Complete ==="
         echo "Version: $SAMBA_VERSION"
-        echo "Minimal package: samba-armv5-minimal-$SAMBA_VERSION.tar.gz"
-        echo "Full package: samba-armv5-full-$SAMBA_VERSION.tar.gz"
-        echo "Artifacts will be available for download from the Actions tab"
+        echo "Package: samba-server-armv5-$SAMBA_VERSION.tar.gz"
+        echo "Includes: smbd, nmbd, smbpasswd"
+        echo "Size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
+        echo "Download from Actions artifacts"
