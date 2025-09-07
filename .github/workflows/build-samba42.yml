@@ -1,35 +1,30 @@
-name: Build Samba Server for ARMv5
+name: Build Samba Server for ARMv5 using QEMU
 
 on:
-  workflow_dispatch: # 允许手动触发工作流
+  workflow_dispatch:
 
 env:
-  SAMBA_VERSION: "4.10.18" # 使用支持旧配置选项的稳定版本
+  SAMBA_VERSION: "4.10.18"
 
 jobs:
   build:
-    runs-on: ubuntu-20.04 # 使用更旧的Ubuntu版本以更好兼容
+    runs-on: ubuntu-22.04
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3 # 使用旧版本的checkout
+      uses: actions/checkout@v4
 
-    - name: Install dependencies and cross-toolchain
+    - name: Set up QEMU for ARM
       run: |
         sudo apt-get update
+        sudo apt-get install -y qemu-user-static binfmt-support
+
+    - name: Install ARMv5 toolchain
+      run: |
         sudo apt-get install -y \
-          build-essential \
-          wget \
-          pkg-config \
-          python2.7 \
-          python-dev \
-          libacl1-dev \
-          libattr1-dev \
-          libblkid-dev \
-          libgnutls28-dev \
-          libreadline-dev \
           gcc-arm-linux-gnueabi \
-          g++-arm-linux-gnueabi
+          g++-arm-linux-gnueabi \
+          binutils-arm-linux-gnueabi
 
     - name: Download Samba source
       run: |
@@ -37,11 +32,42 @@ jobs:
         tar -xzf samba-$SAMBA_VERSION.tar.gz
         echo "SAMBA_SOURCE_DIR=samba-$SAMBA_VERSION" >> $GITHUB_ENV
 
-    - name: Configure Samba for ARMv5
+    - name: Build using QEMU and chroot
       run: |
         cd $SAMBA_SOURCE_DIR
 
-        # 创建详细的交叉编译答案文件
-        cat > cross-answers.txt << 'EOF'
-        Checking simple C program: yes
-        Checking for
+        # 设置编译环境
+        export CC="arm-linux-gnueabi-gcc"
+        export AR="arm-linux-gnueabi-ar"
+        export CFLAGS="-Os -static"
+        export LDFLAGS="-static"
+
+        # 配置
+        ./configure \
+          --host=arm-linux-gnueabi \
+          --disable-python \
+          --enable-smb-server
+
+        # 编译
+        make -j$(nproc) bin/smbd bin/nmbd bin/smbpasswd
+
+    - name: Create package
+      run: |
+        mkdir -p samba-server-armv5
+        cp $SAMBA_SOURCE_DIR/bin/smbd samba-server-armv5/
+        cp $SAMBA_SOURCE_DIR/bin/nmbd samba-server-armv5/
+        cp $SAMBA_SOURCE_DIR/bin/smbpasswd samba-server-armv5/
+
+        # 静态链接检查
+        file samba-server-armv5/smbd
+        echo "Dependencies:"
+        arm-linux-gnueabi-objdump -p samba-server-armv5/smbd | grep NEEDED || echo "Static binary"
+
+        tar -czf samba-server-armv5-$SAMBA_VERSION.tar.gz samba-server-armv5/
+
+    - name: Upload binary package
+      uses: actions/upload-artifact@v4
+      with:
+        name: samba-server-armv5-binaries
+        path: samba-server-armv5-$SAMBA_VERSION.tar.gz
+        retention-days: 7
