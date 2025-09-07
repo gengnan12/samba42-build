@@ -157,7 +157,7 @@ jobs:
             cat > bin/config.status << 'EOF'
 #!/bin/sh
 # Manual config.status for ARMv5
-echo "Manual configuration complete"
+       echo "Manual configuration complete"
 exit 0
 EOF
             chmod +x bin/config.status
