@@ -111,8 +111,6 @@ jobs:
           --prefix=/usr \
           --host=arm-linux-gnueabi \
           --enable-cross-answers=cross-answers.txt \
-          \
-          # 禁用所有不需要的功能
           --disable-avahi \
           --disable-cups \
           --disable-pie \
@@ -121,11 +119,7 @@ jobs:
           --without-ads \
           --without-ldap \
           --without-systemd \
-          \
-          # 仅启用服务器核心
           --enable-smb-server \
-          \
-          # 强制接受交叉编译答案
           --cross-compile \
           --cross-answers=yes
 
@@ -265,16 +259,16 @@ EOF
 
         # 创建使用说明
         cat > samba-server-armv5/README.txt << 'EOF'
-        Samba Server for ARMv5
-        ======================
-        
-        Forced large file support with:
-        -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64
-        
-        Usage:
-        ./smbd -D -s smb.conf
-        ./nmbd -D -s smb.conf
-        EOF
+Samba Server for ARMv5
+======================
+
+Forced large file support with:
+-D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64
+
+Usage:
+./smbd -D -s smb.conf
+./nmbd -D -s smb.conf
+EOF
 
     - name: Create final archive
       run: |
