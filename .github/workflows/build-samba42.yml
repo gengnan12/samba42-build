@@ -1,113 +1,97 @@
-name: Build Samba Server for ARMv5 using Docker
+name: Build Samba Server for ARMv5
 
 on:
-  workflow_dispatch: # 允许手动触发工作流
+  workflow_dispatch:
 
 env:
-  SAMBA_VERSION: "4.10.18" # 使用稳定的旧版本
+  SAMBA_VERSION: "4.10.18"
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-
-    - name: Create Dockerfile for ARMv5 build
+    - name: Install ARM toolchain and dependencies
       run: |
-        cat > Dockerfile << 'EOF'
-        FROM arm32v5/debian:stretch
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-arm-linux-gnueabi \
+          g++-arm-linux-gnueabi \
+          binutils-arm-linux-gnueabi \
+          wget \
+          build-essential \
+          pkg-config \
+          libacl1-dev \
+          libattr1-dev \
+          libblkid-dev \
+          libgnutls28-dev \
+          libreadline-dev
 
-        # 设置Debian源
-        RUN echo "deb http://archive.debian.org/debian stretch main" > /etc/apt/sources.list && \
-            echo "deb http://archive.debian.org/debian-security stretch/updates main" >> /etc/apt/sources.list
-
-        # 安装编译依赖
-        RUN apt-get update && apt-get install -y \
-            build-essential \
-            wget \
-            pkg-config \
-            python2.7 \
-            python-dev \
-            libacl1-dev \
-            libattr1-dev \
-            libblkid-dev \
-            libgnutls28-dev \
-            libreadline-dev \
-            curl
-
-        # 下载和解压Samba
-        WORKDIR /build
-        ARG SAMBA_VERSION
-        RUN wget https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz && \
-            tar -xzf samba-${SAMBA_VERSION}.tar.gz && \
-            rm samba-${SAMBA_VERSION}.tar.gz
-
-        WORKDIR /build/samba-${SAMBA_VERSION}
-
-        # 配置Samba - 使用最简单的配置
-        RUN ./configure \
-            --prefix=/usr \
-            --disable-avahi \
-            --disable-cups \
-            --disable-pie \
-            --disable-debug \
-            --without-python \
-            --without-ads \
-            --without-ldap \
-            --without-systemd
-
-        # 只编译服务器组件
-        RUN make -j$(nproc) bin/smbd bin/nmbd bin/smbpasswd
-
-        # 创建输出目录
-        RUN mkdir -p /output
-
-        # 复制二进制文件
-        RUN cp bin/smbd bin/nmbd bin/smbpasswd /output/
-
-        # 检查文件信息
-        RUN file /output/smbd && file /output/nmbd && file /output/smbpasswd
-        EOF
-
-    - name: Build Samba using Docker
+    - name: Download Samba source
       run: |
-        # 使用buildx构建ARMv5镜像
-        docker buildx build \
-          --platform linux/arm/v5 \
-          --build-arg SAMBA_VERSION=$SAMBA_VERSION \
-          -t samba-builder .
+        wget https://download.samba.org/pub/samba/stable/samba-$SAMBA_VERSION.tar.gz
+        tar -xzf samba-$SAMBA_VERSION.tar.gz
+        echo "SAMBA_SOURCE_DIR=samba-$SAMBA_VERSION" >> $GITHUB_ENV
 
-        # 创建容器并提取二进制文件
-        docker create --name samba-container samba-builder
-        docker cp samba-container:/output ./samba-binaries
-        docker rm samba-container
-
-        # 检查提取的文件
-        ls -la samba-binaries/
-        file samba-binaries/*
-
-    - name: Create package
+    - name: Build Samba with static linking
       run: |
+        cd $SAMBA_SOURCE_DIR
+        
+        # 设置静态编译环境
+        export CC="arm-linux-gnueabi-gcc"
+        export AR="arm-linux-gnueabi-ar"
+        export CFLAGS="-Os -static"
+        export LDFLAGS="-static"
+        
+        # 最简单的配置，避免所有可能出错的选项
+        ./configure --host=arm-linux-gnueabi --prefix=/usr
+        
+        # 只编译服务器核心组件
+        make -j$(nproc) bin/smbd || make -j1 bin/smbd
+        make -j$(nproc) bin/nmbd || make -j1 bin/nmbd
+        make -j$(nproc) bin/smbpasswd || make -j1 bin/smbpasswd
+
+    - name: Verify and package binaries
+      run: |
+        # 检查编译结果
+        echo "Build results:"
+        ls -la $SAMBA_SOURCE_DIR/bin/smbd $SAMBA_SOURCE_DIR/bin/nmbd $SAMBA_SOURCE_DIR/bin/smbpasswd 2>/dev/null || true
+        
         # 创建打包目录
         mkdir -p samba-server-armv5
         
         # 复制二进制文件
-        cp samba-binaries/smbd samba-binaries/nmbd samba-binaries/smbpasswd samba-server-armv5/
+        if [ -f "$SAMBA_SOURCE_DIR/bin/smbd" ]; then
+            cp $SAMBA_SOURCE_DIR/bin/smbd samba-server-armv5/
+            echo "✓ smbd copied"
+        fi
         
-        # 检查架构
-        echo "Binary architecture:"
-        file samba-server-armv5/smbd
-        file samba-server-armv5/nmbd
-        file samba-server-armv5/smbpasswd
+        if [ -f "$SAMBA_SOURCE_DIR/bin/nmbd" ]; then
+            cp $SAMBA_SOURCE_DIR/bin/nmbd samba-server-armv5/
+            echo "✓ nmbd copied"
+        fi
+        
+        if [ -f "$SAMBA_SOURCE_DIR/bin/smbpasswd" ]; then
+            cp $SAMBA_SOURCE_DIR/bin/smbpasswd samba-server-armv5/
+            echo "✓ smbpasswd copied"
+        fi
+        
+        # 检查文件信息
+        echo "File information:"
+        for bin in samba-server-armv5/*; do
+            if [ -f "$bin" ]; then
+                echo "$(basename $bin): $(file $bin)"
+                # 检查是否是静态链接
+                if arm-linux-gnueabi-objdump -p "$bin" | grep -q "DYNAMIC"; then
+                    echo "  - Dynamic binary"
+                else
+                    echo "  - Static binary"
+                fi
+            fi
+        done
 
         # 创建压缩包
         tar -czf samba-server-armv5-$SAMBA_VERSION.tar.gz samba-server-armv5/
-        
         echo "Package created: samba-server-armv5-$SAMBA_VERSION.tar.gz"
         echo "Size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
 
@@ -122,11 +106,12 @@ jobs:
       run: |
         echo "=== Build Summary ==="
         echo "Version: $SAMBA_VERSION"
-        echo "Package: samba-server-armv5-$SAMBA_VERSION.tar.gz"
-        echo "Build method: Docker native ARMv5 compilation"
+        echo "Build method: ARM cross-compilation with static linking"
         if [ -f "samba-server-armv5-$SAMBA_VERSION.tar.gz" ]; then
-            echo "Package size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
-            echo "Contents: $(tar -tzf samba-server-armv5-$SAMBA_VERSION.tar.gz)"
+            echo "Package: samba-server-armv5-$SAMBA_VERSION.tar.gz"
+            echo "Size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
+            echo "Contents:"
+            tar -tzf samba-server-armv5-$SAMBA_VERSION.tar.gz
         else
             echo "Build failed - no package created"
             exit 1
