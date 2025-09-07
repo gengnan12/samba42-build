@@ -4,15 +4,15 @@ on:
   workflow_dispatch: # 允许手动触发工作流
 
 env:
-  SAMBA_VERSION: "4.19.3" # 使用最新的稳定版
+  SAMBA_VERSION: "4.10.18" # 使用支持旧配置选项的稳定版本
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04 # 使用更旧的Ubuntu版本以更好兼容
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3 # 使用旧版本的checkout
 
     - name: Install dependencies and cross-toolchain
       run: |
@@ -21,7 +21,8 @@ jobs:
           build-essential \
           wget \
           pkg-config \
-          python3 \
+          python2.7 \
+          python-dev \
           libacl1-dev \
           libattr1-dev \
           libblkid-dev \
@@ -40,104 +41,7 @@ jobs:
       run: |
         cd $SAMBA_SOURCE_DIR
 
-        # 创建交叉编译答案文件
+        # 创建详细的交叉编译答案文件
         cat > cross-answers.txt << 'EOF'
         Checking simple C program: yes
-        Checking for large file support: yes
-        Checking for -D_FILE_OFFSET_BITS=64: yes
-        Checking for -D_LARGE_FILES: yes
-        Checking for WORDS_BIGENDIAN: no
-        Checking for C99 vsnprintf: yes
-        Checking for HAVE_SECURE_MKSTEMP: yes
-        rpath library support: yes
-        Checking for _LARGEFILE64_SOURCE: yes
-        Checking for _FILE_OFFSET_BITS=64: yes
-        Checking getconf LFS_CFLAGS: -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
-        Checking for large file support without additional flags: no
-        sizeof(off_t): 8
-        Checking for header vararg.h: no
-        Checking for header limits.h: yes
-        Checking for header assert.h: yes
-        EOF
-
-        # 设置编译环境
-        export CC="arm-linux-gnueabi-gcc"
-        export AR="arm-linux-gnueabi-ar"
-        export CFLAGS="-D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -Os"
-        export CPPFLAGS="-D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE"
-
-        echo "Using CFLAGS: $CFLAGS"
-
-        # 运行最简单的配置命令 - 只包含绝对必要的选项
-        CC="arm-linux-gnueabi-gcc" CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" ./configure \
-          --host=arm-linux-gnueabi \
-          --cross-compile \
-          --cross-answers=cross-answers.txt
-
-        echo "Configuration completed"
-
-    - name: Build server components
-      run: |
-        cd $SAMBA_SOURCE_DIR
-        echo "Building server components..."
-        
-        # 构建核心服务器组件
-        if [ -f "Makefile" ]; then
-            make -j$(nproc) bin/smbd bin/nmbd bin/smbpasswd || make -j1 bin/smbd bin/nmbd bin/smbpasswd
-        else
-            echo "No Makefile found"
-            exit 1
-        fi
-        
-        echo "Build completed"
-        ls -la bin/smbd bin/nmbd bin/smbpasswd
-
-    - name: Create binary package
-      run: |
-        # 创建打包目录
-        mkdir -p samba-server-armv5
-        
-        # 只复制核心二进制文件
-        echo "Copying core binaries..."
-        cp $SAMBA_SOURCE_DIR/bin/smbd samba-server-armv5/
-        cp $SAMBA_SOURCE_DIR/bin/nmbd samba-server-armv5/
-        cp $SAMBA_SOURCE_DIR/bin/smbpasswd samba-server-armv5/
-        
-        # 检查文件架构
-        echo "Binary architecture:"
-        file samba-server-armv5/smbd
-        file samba-server-armv5/nmbd
-        file samba-server-armv5/smbpasswd
-
-    - name: Create final archive
-      run: |
-        # 创建压缩包
-        tar -czf samba-server-armv5-$SAMBA_VERSION.tar.gz samba-server-armv5/
-        
-        # 显示包内容
-        echo "Package contents:"
-        tar -tzf samba-server-armv5-$SAMBA_VERSION.tar.gz
-        
-        echo "Package created: samba-server-armv5-$SAMBA_VERSION.tar.gz"
-        echo "Size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
-
-    - name: Upload binary package
-      uses: actions/upload-artifact@v4
-      with:
-        name: samba-server-armv5-binaries
-        path: samba-server-armv5-$SAMBA_VERSION.tar.gz
-        retention-days: 7
-
-    - name: Show build summary
-      run: |
-        echo "=== Build Summary ==="
-        echo "Version: $SAMBA_VERSION"
-        echo "Package: samba-server-armv5-$SAMBA_VERSION.tar.gz"
-        echo "Binaries included: smbd, nmbd, smbpasswd"
-        echo "Target architecture: ARMv5"
-        if [ -f "samba-server-armv5-$SAMBA_VERSION.tar.gz" ]; then
-            echo "Package size: $(du -h samba-server-armv5-$SAMBA_VERSION.tar.gz | cut -f1)"
-        else
-            echo "Build failed - no package created"
-            exit 1
-        fi
+        Checking for
