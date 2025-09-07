@@ -68,14 +68,11 @@ jobs:
 
         echo "Using CFLAGS: $CFLAGS"
 
-        # 运行最简单的配置命令 - 只包含必要的选项
+        # 运行最简单的配置命令 - 只包含绝对必要的选项
         CC="arm-linux-gnueabi-gcc" CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" ./configure \
-          --prefix=/usr \
           --host=arm-linux-gnueabi \
           --cross-compile \
-          --cross-answers=cross-answers.txt \
-          --without-python \
-          --enable-smb-server
+          --cross-answers=cross-answers.txt
 
         echo "Configuration completed"
 
