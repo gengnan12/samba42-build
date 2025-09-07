@@ -68,14 +68,32 @@ jobs:
 
         echo "Using CFLAGS: $CFLAGS"
 
-        # 运行配置命令
-        CC="arm-linux-gnueabi-gcc" CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" ./configure --prefix=/usr --host=arm-linux-gnueabi --enable-cross-answers=cross-answers.txt --disable-avahi --disable-cups --disable-pie --disable-debug --without-python --without-ads --without-ldap --without-systemd --enable-smb-server --cross-compile --cross-answers=yes
+        # 运行配置命令 - 使用正确的选项
+        CC="arm-linux-gnueabi-gcc" CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" ./configure \
+          --prefix=/usr \
+          --host=arm-linux-gnueabi \
+          --disable-avahi \
+          --disable-cups \
+          --disable-pie \
+          --disable-debug \
+          --without-python \
+          --without-ads \
+          --without-ldap \
+          --without-systemd \
+          --enable-smb-server \
+          --cross-compile \
+          --cross-answers=cross-answers.txt
 
         # 如果配置失败，尝试简化配置
         if [ $? -ne 0 ]; then
             echo "Trying simplified configuration"
             make clean > /dev/null 2>&1 || true
-            CC="arm-linux-gnueabi-gcc" CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" ./configure --host=arm-linux-gnueabi --cross-compile --cross-answers=cross-answers.txt --disable-python --enable-smb-server
+            CC="arm-linux-gnueabi-gcc" CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" ./configure \
+              --host=arm-linux-gnueabi \
+              --cross-compile \
+              --cross-answers=cross-answers.txt \
+              --disable-python \
+              --enable-smb-server
         fi
 
         echo "Configuration completed"
