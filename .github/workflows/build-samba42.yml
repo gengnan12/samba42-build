@@ -123,10 +123,7 @@ jobs:
             fi
         done
 
-        # 创建说明文件
-        cat > samba-server-armv5/README.txt << 'EOF'
-Samba Server for ARMv5
-
+        
 Forced large file support with:
 -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64
 
